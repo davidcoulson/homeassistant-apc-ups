@@ -12,6 +12,6 @@
   "requirements": [
     "pysnmp==7.1.30"
   ],
-  "version": "1.1.0",
+  "version": "1.1.1",
   "issue_tracker": "https://github.com/davidcoulson/homeassistant-apc-ups/issues"
 }

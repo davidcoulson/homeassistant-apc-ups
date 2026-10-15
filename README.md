@@ -73,3 +73,10 @@ uv pip install --python .venv -r requirements-dev.txt
 Tests use fixture-backed SNMP responses and mocked transport calls. Reference driver source is not included. OIDs, enum definitions and scaling are derived from the APC PowerNet MIB and NUT mappings; no GPL driver code is copied.
 
 Fork maintained by David Coulson. Based on [Sean Greenhalgh's original integration](https://github.com/scgreenhalgh/homeassistant-apc-ups). Distributed under the original MIT [license](LICENSE).
+
+## Branding
+
+The APC logo in `custom_components/apc_ups_snmp/brand/` is a trademark of Schneider Electric. It is the same image
+Home Assistant uses for its built-in APC UPS Daemon integration (from the
+[home-assistant/brands](https://github.com/home-assistant/brands) repository), and is used only to identify the
+devices this integration works with. This project is not affiliated with or endorsed by Schneider Electric.
