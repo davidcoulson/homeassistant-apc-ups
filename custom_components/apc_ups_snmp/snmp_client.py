@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import atexit
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -16,6 +16,7 @@ from pysnmp.hlapi.v3arch.asyncio import (
     SnmpEngine,
     UdpTransportTarget,
     UsmUserData,
+    bulk_cmd,
     get_cmd,
     next_cmd,
     usm3DESEDEPrivProtocol,
@@ -54,34 +55,6 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-# Thread pool executor for running SNMP operations
-# Limited to 4 workers to prevent resource exhaustion
-_EXECUTOR: ThreadPoolExecutor | None = None
-
-
-def _get_executor() -> ThreadPoolExecutor:
-    """Get or create the thread pool executor."""
-    global _EXECUTOR
-    if _EXECUTOR is None:
-        _EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="snmp_")
-    return _EXECUTOR
-
-
-def shutdown_executor() -> None:
-    """Shutdown the thread pool executor.
-
-    Called automatically at interpreter exit or can be called manually
-    when the integration is unloaded.
-    """
-    global _EXECUTOR
-    if _EXECUTOR is not None:
-        _EXECUTOR.shutdown(wait=False)
-        _EXECUTOR = None
-
-
-# Register cleanup at interpreter exit
-atexit.register(shutdown_executor)
 
 
 class SnmpError(Exception):
@@ -160,6 +133,14 @@ class ApcSnmpClient:
         self.priv_protocol = priv_protocol
         self.priv_password = priv_password
         self.timeout = timeout
+        self._executor = None
+        self._loop = None
+        self._engine = None
+        self._target = None
+        self._auth_data = None
+        self._closed = False
+        self._table_oids = None
+        self._discovered_at = 0.0
 
     def _get_auth_data(self) -> CommunityData | UsmUserData:
         """Get the authentication data based on SNMP version."""
@@ -195,7 +176,10 @@ class ApcSnmpClient:
         """
 
         def run_coro():
-            return asyncio.run(coro_func())
+            if self._loop is None:
+                self._loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._loop)
+            return self._loop.run_until_complete(coro_func())
 
         return run_coro
 
@@ -218,17 +202,27 @@ class ApcSnmpClient:
         """Run one bounded read in the dedicated executor."""
 
         async def operation():
-            engine = SnmpEngine()
             try:
-                target = await UdpTransportTarget.create(
-                    (self.host, self.port), timeout=self.timeout, retries=1
+                if self._engine is None:
+                    self._engine = SnmpEngine()
+                if self._target is None:
+                    self._target = await UdpTransportTarget.create(
+                        (self.host, self.port), timeout=self.timeout, retries=1
+                    )
+                if self._auth_data is None:
+                    self._auth_data = self._get_auth_data()
+                command = (
+                    (next_cmd if self.version == "v1" else bulk_cmd)
+                    if walk
+                    else get_cmd
                 )
-                command = next_cmd if walk else get_cmd
+                bulk_args = (0, 20) if walk and self.version != "v1" else ()
                 indication, status, index, binds = await command(
-                    engine,
-                    self._get_auth_data(),
-                    target,
+                    self._engine,
+                    self._auth_data,
+                    self._target,
                     ContextData(),
+                    *bulk_args,
                     *(ObjectType(ObjectIdentity(oid)) for oid in oids),
                     lookupMib=False,
                 )
@@ -243,32 +237,35 @@ class ApcSnmpClient:
                 raise
             except Exception as err:
                 raise SnmpConnectionError(str(err)) from err
-            finally:
-                engine.close_dispatcher()
 
+        if self._closed:
+            raise SnmpConnectionError("Client is closed")
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="apc_snmp"
+            )
         return await asyncio.get_running_loop().run_in_executor(
-            _get_executor(), self._run_snmp_in_thread(operation)
+            self._executor, self._run_snmp_in_thread(operation)
         )
 
     async def _async_execute_get(self, oid):
         return (await self.async_get_multiple([oid])).get(oid)
 
     async def async_walk(self, root):
-        """GETNEXT works for all versions; stop at subtree/end/nonprogress."""
+        """Discover cells with GETBULK (GETNEXT for v1), stopping at boundaries."""
         result = {}
         cursor = root
         for _ in range(10000):
             values, error = await self._request([cursor], walk=True)
             if error or not values:
                 break
-            oid, value = next(iter(values.items()))
-            if not oid.startswith(root + ".") or tuple(
-                map(int, oid.strip(".").split("."))
-            ) <= tuple(map(int, cursor.strip(".").split("."))):
-                break
-            # Unsupported cells still advance the cursor.
-            result[oid] = value
-            cursor = oid
+            for oid, value in values.items():
+                if not oid.startswith(root + ".") or tuple(
+                    map(int, oid.strip(".").split("."))
+                ) <= tuple(map(int, cursor.strip(".").split("."))):
+                    return result
+                result[oid] = value
+                cursor = oid
         return result
 
     def _parse_value(self, value: Any) -> Any:
@@ -379,10 +376,46 @@ class ApcSnmpClient:
                 UPS + ".11.1.1.0",
             ]
             roots = [UPS + ".12.1.2", UPS + ".9.2", UPS + ".9.3"]
-        data = await self.async_get_multiple(list(dict.fromkeys(oids)))
-        for root in roots:
-            data.update(await self.async_walk(root))
+        discover = (
+            self._table_oids is None or time.monotonic() - self._discovered_at >= 3600
+        )
+        data = await self.async_get_multiple(
+            list(dict.fromkeys(oids + list(self._table_oids or ())))
+        )
+        if self._table_oids and any(data.get(oid) is None for oid in self._table_oids):
+            discover = True
+        if discover:
+            tables = {}
+            for root in roots:
+                tables.update(await self.async_walk(root))
+            self._table_oids = tuple(
+                oid for oid, value in tables.items() if value is not None
+            )
+            self._discovered_at = time.monotonic()
+            data.update(tables)
         return data
 
     def close(self):
-        """Requests own and close their dispatchers."""
+        """Queue dispatcher and loop cleanup on the client's owning thread."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._executor is None:
+            return
+
+        def cleanup():
+            if self._engine is not None:
+                self._engine.close_dispatcher()
+            if self._loop is not None:
+                tasks = asyncio.all_tasks(self._loop)
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    self._loop.run_until_complete(
+                        asyncio.gather(*tasks, return_exceptions=True)
+                    )
+                self._loop.run_until_complete(self._loop.shutdown_asyncgens())
+                self._loop.close()
+
+        self._executor.submit(cleanup)
+        self._executor.shutdown(wait=False)

@@ -1,10 +1,9 @@
 """Transport bounds, exceptional values, and failure classification."""
 
-from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pysnmp.proto.rfc1902 import Integer32, OctetString
+from pysnmp.proto.rfc1902 import Gauge32, Integer32, OctetString, TimeTicks
 from pysnmp.proto.rfc1905 import EndOfMibView, NoSuchInstance, NoSuchObject
 
 from custom_components.apc_ups_snmp.catalog import ATS, UPS
@@ -31,6 +30,8 @@ def test_community_version(version, model):
     [
         (Integer32(-1), None),
         (Integer32(120), 120),
+        (Gauge32(125), 125),
+        (TimeTicks(180000), 180000),
         (OctetString("01/15/2024"), "01/15/2024"),
         (NoSuchObject(), None),
         (NoSuchInstance(), None),
@@ -103,32 +104,41 @@ async def test_too_big_splits():
         }
 
 
-async def test_executor_request_closes_dispatcher():
-    client = ApcSnmpClient("192.0.2.1", version="v1")
+async def test_executor_reuses_engine_and_loop():
+    import asyncio
+    import threading
+
+    client = ApcSnmpClient("192.0.2.1", version="v3")
     engine = MagicMock()
+    owners = []
+
+    async def get(*args, **kwargs):
+        owners.append((threading.get_ident(), asyncio.get_running_loop()))
+        return None, None, 0, [("1.2.3", Integer32(125))]
+
     with (
-        ThreadPoolExecutor(max_workers=1) as executor,
-        patch(
-            "custom_components.apc_ups_snmp.snmp_client._get_executor",
-            return_value=executor,
-        ),
         patch(
             "custom_components.apc_ups_snmp.snmp_client.SnmpEngine", return_value=engine
-        ),
+        ) as factory,
         patch(
             "custom_components.apc_ups_snmp.snmp_client.UdpTransportTarget.create",
             new=AsyncMock(),
-        ),
-        patch(
-            "custom_components.apc_ups_snmp.snmp_client.get_cmd",
-            new=AsyncMock(
-                return_value=(None, None, 0, [("1.2.3", Integer32(125))]),
-            ),
-        ) as get,
+        ) as target,
+        patch("custom_components.apc_ups_snmp.snmp_client.get_cmd", side_effect=get),
     ):
-        assert await client.async_get(".1.2.3") == 125
-        assert get.await_count == 1
+        try:
+            assert await client.async_get(".1.2.3") == 125
+            assert await client.async_get(".1.2.3") == 125
+            assert owners[0] == owners[1]
+            assert owners[0][0] != threading.get_ident()
+            factory.assert_called_once()
+            target.assert_awaited_once()
+            engine.close_dispatcher.assert_not_called()
+        finally:
+            client.close()
+            await asyncio.to_thread(client._executor.shutdown, wait=True)
         engine.close_dispatcher.assert_called_once()
+        assert owners[0][1].is_closed()
 
 
 async def test_v1_missing_oid_isolated(fake_snmp):
@@ -141,3 +151,82 @@ async def test_v1_missing_oid_isolated(fake_snmp):
 def test_bit_flags_remain_text():
     flags = "000100001" + "0" * 55
     assert ApcSnmpClient("192.0.2.1")._parse_value(OctetString(flags)) == flags
+
+
+@pytest.mark.parametrize(
+    "version,command", [("v1", "next_cmd"), ("v2c", "bulk_cmd"), ("v3", "bulk_cmd")]
+)
+async def test_walk_command(version, command):
+    import asyncio
+
+    client = ApcSnmpClient("192.0.2.1", version=version)
+    root = UPS + ".12.1.2"
+    with (
+        patch("custom_components.apc_ups_snmp.snmp_client.SnmpEngine"),
+        patch(
+            "custom_components.apc_ups_snmp.snmp_client.UdpTransportTarget.create",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.apc_ups_snmp.snmp_client." + command,
+            new=AsyncMock(
+                return_value=(
+                    None,
+                    None,
+                    0,
+                    [(root + ".1", Integer32(1)), (ATS, Integer32(2))],
+                )
+            ),
+        ) as request,
+    ):
+        try:
+            assert await client.async_walk(root) == {root + ".1": 1}
+            if version != "v1":
+                assert request.call_args.args[4:6] == (0, 20)
+        finally:
+            client.close()
+            await asyncio.to_thread(client._executor.shutdown, wait=True)
+
+
+async def test_table_cache(fake_snmp):
+    from unittest.mock import patch
+
+    client = fake_snmp("192.0.2.1")
+    client.device_type = "ats"
+    client.fixture = "ap4452a.walk"
+    with patch(
+        "custom_components.apc_ups_snmp.snmp_client.time.monotonic", return_value=10000
+    ) as now:
+        first = await client.async_get_all_data()
+        assert any(walk for _, walk in client.calls)
+        client.calls.clear()
+        second = await client.async_get_all_data()
+        assert {oid: value for oid, value in first.items() if value is not None} == {
+            oid: value for oid, value in second.items() if value is not None
+        }
+        assert not any(walk for _, walk in client.calls)
+        now.return_value += 3600
+        await client.async_get_all_data()
+        assert any(walk for _, walk in client.calls)
+        client.calls.clear()
+        # A vanished known cell triggers rediscovery without waiting an hour.
+        with patch.object(
+            client,
+            "async_get_multiple",
+            return_value={oid: None for oid in client._table_oids},
+        ):
+            await client.async_get_all_data()
+        assert any(walk for _, walk in client.calls)
+
+
+def test_timeticks_scaling():
+    from custom_components.apc_ups_snmp.catalog import UPS_MEASUREMENTS
+
+    client = ApcSnmpClient("192.0.2.1")
+    data = {
+        UPS + ".2.2.3.0": client._parse_value(TimeTicks(180000)),
+        UPS + ".2.1.2.0": client._parse_value(TimeTicks(12300)),
+    }
+    values = {item.key: item.value(data) for item in UPS_MEASUREMENTS}
+    assert values["battery_runtime"] == 30
+    assert values["time_on_battery"] == 123
