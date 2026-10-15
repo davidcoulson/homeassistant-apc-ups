@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from pyasn1.error import PyAsn1Error
+from pysnmp.error import PySnmpError
 from pysnmp.hlapi.v3arch.asyncio import (
     CommunityData,
     ContextData,
     ObjectIdentity,
     ObjectType,
     SnmpEngine,
+    Udp6TransportTarget,
     UdpTransportTarget,
     UsmUserData,
     bulk_cmd,
@@ -55,6 +59,37 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+_MISSING = object()
+
+
+class SnmpConfigError(ValueError):
+    """Invalid local SNMP security settings."""
+
+    def __init__(self, errors):
+        self.errors = errors
+        super().__init__(str(errors))
+
+
+def validate_v3(data):
+    """Require explicit, paired protocols and sufficiently long keys."""
+    errors = {}
+    for prefix in ("auth", "priv"):
+        protocol = data.get(prefix + "_protocol")
+        password = data.get(prefix + "_password")
+        if password and not protocol:
+            errors[prefix + "_protocol"] = "protocol_required"
+        if protocol and not password:
+            errors[prefix + "_password"] = "password_required"
+        if password and len(password) < 8:
+            errors[prefix + "_password"] = "password_too_short"
+        mapping = AUTH_PROTOCOL_MAP if prefix == "auth" else PRIV_PROTOCOL_MAP
+        if protocol and protocol not in mapping:
+            errors[prefix + "_protocol"] = "invalid_protocol"
+    if (data.get("priv_protocol") or data.get("priv_password")) and not (
+        data.get("auth_protocol") and data.get("auth_password")
+    ):
+        errors["priv_protocol"] = "privacy_requires_auth"
+    return errors
 
 
 class SnmpError(Exception):
@@ -141,6 +176,27 @@ class ApcSnmpClient:
         self._closed = False
         self._table_oids = None
         self._discovered_at = 0.0
+        self._hourly_discovered_at = 0.0
+        self._missing_scalars = set()
+        self._missing_cells = set()
+
+    @classmethod
+    def from_config(cls, data):
+        """Build a client consistently from entry or flow data."""
+        keys = (
+            "host",
+            "port",
+            "community",
+            "username",
+            "auth_protocol",
+            "auth_password",
+            "priv_protocol",
+            "priv_password",
+        )
+        return cls(
+            version=data.get("snmp_version", "v2c"),
+            **{key: data[key] for key in keys if key in data},
+        )
 
     def _get_auth_data(self) -> CommunityData | UsmUserData:
         """Get the authentication data based on SNMP version."""
@@ -148,6 +204,10 @@ class ApcSnmpClient:
             return CommunityData(
                 self.community or "public", mpModel=0 if self.version == "v1" else 1
             )
+
+        errors = validate_v3(vars(self))
+        if errors:
+            raise SnmpConfigError(errors)
 
         # SNMP v3
         auth_proto = None
@@ -206,7 +266,12 @@ class ApcSnmpClient:
                 if self._engine is None:
                     self._engine = SnmpEngine()
                 if self._target is None:
-                    self._target = await UdpTransportTarget.create(
+                    try:
+                        ipv6 = ipaddress.ip_address(self.host).version == 6
+                    except ValueError:
+                        ipv6 = False
+                    target_type = Udp6TransportTarget if ipv6 else UdpTransportTarget
+                    self._target = await target_type.create(
                         (self.host, self.port), timeout=self.timeout, retries=1
                     )
                 if self._auth_data is None:
@@ -228,14 +293,28 @@ class ApcSnmpClient:
                 )
                 self._check_error(indication, status)
                 if status:
-                    return {}, int(index or -1)
-                return {
-                    "." + str(oid).lstrip("."): self._parse_value(value)
-                    for oid, value in binds
-                }, 0
-            except SnmpError:
+                    return {}, int(index or -1) if int(status) == 2 else -1
+                values = {}
+                for oid, value in binds:
+                    if walk and isinstance(value, EndOfMibView):
+                        break
+                    values["." + str(oid).lstrip(".")] = (
+                        _MISSING
+                        if isinstance(
+                            value, (NoSuchObject, NoSuchInstance, EndOfMibView)
+                        )
+                        else self._parse_value(value)
+                    )
+                return values, 0
+            except (SnmpTimeoutError, SnmpConnectionError):
+                self._target = None
                 raise
+            except (SnmpError, SnmpConfigError):
+                raise
+            except (PySnmpError, PyAsn1Error, ValueError, TypeError) as err:
+                raise SnmpConfigError({"base": "invalid_security"}) from err
             except Exception as err:
+                self._target = None
                 raise SnmpConnectionError(str(err)) from err
 
         if self._closed:
@@ -260,6 +339,8 @@ class ApcSnmpClient:
             if error or not values:
                 break
             for oid, value in values.items():
+                if value is _MISSING:
+                    return result
                 if not oid.startswith(root + ".") or tuple(
                     map(int, oid.strip(".").split("."))
                 ) <= tuple(map(int, cursor.strip(".").split("."))):
@@ -330,17 +411,24 @@ class ApcSnmpClient:
 
     async def async_get_multiple(self, oids):
         """Limit PDUs to 20 bindings, isolate v1 noSuchName failures."""
-        result = {}
+        result = {oid: None for oid in oids if oid in self._missing_scalars}
+        oids = [oid for oid in oids if oid not in self._missing_scalars]
         for start in range(0, len(oids), 20):
             pending = list(oids[start : start + 20])
             while pending:
                 values, error = await self._request(pending)
                 if not error:
-                    result.update(values)
+                    for oid, value in values.items():
+                        if value is _MISSING:
+                            self._remember_missing(oid)
+                            value = None
+                        result[oid] = value
                     break
                 # v1 rejects the entire PDU for a missing OID.
                 if 0 < error <= len(pending):
-                    result[pending.pop(error - 1)] = None
+                    oid = pending.pop(error - 1)
+                    self._remember_missing(oid)
+                    result[oid] = None
                 elif len(pending) > 1:
                     for oid in pending:
                         result[oid] = await self.async_get(oid)
@@ -349,6 +437,12 @@ class ApcSnmpClient:
                     result[pending[0]] = None
                     break
         return result
+
+    def _remember_missing(self, oid):
+        if oid in (self._table_oids or ()):
+            self._missing_cells.add(oid)
+        else:
+            self._missing_scalars.add(oid)
 
     async def async_get_identity(self):
         kind = getattr(self, "device_type", None) or await self.async_detect_device()
@@ -376,22 +470,27 @@ class ApcSnmpClient:
                 UPS + ".11.1.1.0",
             ]
             roots = [UPS + ".12.1.2", UPS + ".9.2", UPS + ".9.3"]
-        discover = (
-            self._table_oids is None or time.monotonic() - self._discovered_at >= 3600
+        hourly = (
+            self._table_oids is None
+            or time.monotonic() - self._hourly_discovered_at >= 3600
         )
+        discover = hourly
+        if hourly:
+            self._missing_scalars.clear()
+        self._missing_cells.clear()
         data = await self.async_get_multiple(
             list(dict.fromkeys(oids + list(self._table_oids or ())))
         )
-        if self._table_oids and any(data.get(oid) is None for oid in self._table_oids):
+        if self._missing_cells and time.monotonic() - self._discovered_at >= 300:
             discover = True
         if discover:
             tables = {}
             for root in roots:
                 tables.update(await self.async_walk(root))
-            self._table_oids = tuple(
-                oid for oid, value in tables.items() if value is not None
-            )
+            self._table_oids = tuple(tables)
             self._discovered_at = time.monotonic()
+            if hourly:
+                self._hourly_discovered_at = self._discovered_at
             data.update(tables)
         return data
 

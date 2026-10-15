@@ -209,11 +209,17 @@ async def test_table_cache(fake_snmp):
         await client.async_get_all_data()
         assert any(walk for _, walk in client.calls)
         client.calls.clear()
-        # A vanished known cell triggers rediscovery without waiting an hour.
+        # Missing cells trigger rediscovery after the five-minute cooldown.
+        now.return_value += 300
+
+        async def missing_cells(oids):
+            client._missing_cells.update(client._table_oids)
+            return {oid: None for oid in oids}
+
         with patch.object(
             client,
             "async_get_multiple",
-            return_value={oid: None for oid in client._table_oids},
+            side_effect=missing_cells,
         ):
             await client.async_get_all_data()
         assert any(walk for _, walk in client.calls)
@@ -230,3 +236,179 @@ def test_timeticks_scaling():
     values = {item.key: item.value(data) for item in UPS_MEASUREMENTS}
     assert values["battery_runtime"] == 30
     assert values["time_on_battery"] == 123
+
+
+async def test_none_cells_retained_and_missing_cooldown(fake_snmp):
+    from custom_components.apc_ups_snmp.snmp_client import _MISSING
+
+    client = fake_snmp("192.0.2.1", version="v1")
+    cell = UPS + ".12.1.2.1.3.9"
+    value = None
+    walks = 0
+
+    async def request(oids, walk=False):
+        nonlocal walks
+        if walk:
+            walks += 1
+            return ({cell: value}, 0) if cell not in oids else ({}, 0)
+        return {oid: value if oid == cell else 1 for oid in oids}, 0
+
+    with (
+        patch.object(client, "_request", side_effect=request),
+        patch(
+            "custom_components.apc_ups_snmp.snmp_client.time.monotonic",
+            return_value=10000,
+        ) as now,
+    ):
+        await client.async_get_all_data()
+        assert cell in client._table_oids
+        walks = 0
+        await client.async_get_all_data()
+        assert walks == 0
+        value = 2
+        assert (await client.async_get_all_data())[cell] == 2
+        value = _MISSING
+        await client.async_get_all_data()
+        assert walks == 0
+        now.return_value += 300
+        await client.async_get_all_data()
+        assert walks > 0
+        walks = 0
+        await client.async_get_all_data()
+        assert walks == 0
+
+
+async def test_v1_steady_poll_request_count(fake_snmp):
+    import math
+
+    client = fake_snmp("192.0.2.1", version="v1")
+    with patch(
+        "custom_components.apc_ups_snmp.snmp_client.time.monotonic", return_value=10000
+    ) as now:
+        first = await client.async_get_all_data()
+        client.calls.clear()
+        await client.async_get_all_data()
+        supported = len(set(first) - client._missing_scalars)
+        assert len(client.calls) == math.ceil(supported / 20)
+        assert not any(walk for _, walk in client.calls)
+        missing = set(client._missing_scalars)
+        assert missing
+        assert not any(missing.intersection(oids) for oids, _ in client.calls)
+        client.calls.clear()
+        now.return_value += 3600
+        await client.async_get_all_data()
+        assert any(missing.intersection(oids) for oids, _ in client.calls)
+
+
+@pytest.mark.parametrize("failure", [SnmpTimeoutError, SnmpConnectionError])
+async def test_transport_resolved_again(failure):
+    import asyncio
+
+    client = ApcSnmpClient("example.invalid")
+    engine = MagicMock()
+    with (
+        patch(
+            "custom_components.apc_ups_snmp.snmp_client.SnmpEngine", return_value=engine
+        ),
+        patch(
+            "custom_components.apc_ups_snmp.snmp_client.UdpTransportTarget.create",
+            new=AsyncMock(),
+        ) as target,
+        patch(
+            "custom_components.apc_ups_snmp.snmp_client.get_cmd",
+            new=AsyncMock(
+                side_effect=[failure(), (None, None, 0, [("1.2.3", Integer32(1))])]
+            ),
+        ),
+    ):
+        try:
+            with pytest.raises(failure):
+                await client.async_get(".1.2.3")
+            assert await client.async_get(".1.2.3") == 1
+            assert target.await_count == 2
+            assert client._engine is engine
+        finally:
+            client.close()
+            await asyncio.to_thread(client._executor.shutdown, wait=True)
+
+
+async def test_ipv6_transport():
+    import asyncio
+
+    client = ApcSnmpClient("::1")
+    with (
+        patch("custom_components.apc_ups_snmp.snmp_client.SnmpEngine"),
+        patch(
+            "custom_components.apc_ups_snmp.snmp_client.Udp6TransportTarget.create",
+            new=AsyncMock(),
+        ) as target,
+        patch(
+            "custom_components.apc_ups_snmp.snmp_client.get_cmd",
+            new=AsyncMock(return_value=(None, None, 0, [("1.2.3", Integer32(1))])),
+        ),
+    ):
+        try:
+            assert await client.async_get(".1.2.3") == 1
+            assert target.call_args.args == (("::1", 161),)
+        finally:
+            client.close()
+            await asyncio.to_thread(client._executor.shutdown, wait=True)
+
+
+def test_from_config_defaults():
+    client = ApcSnmpClient.from_config({"host": "localhost"})
+    assert client.version == "v2c"
+    assert client.port == 161
+
+
+@pytest.mark.parametrize("raw", [NoSuchObject(), NoSuchInstance()])
+async def test_scalar_missing_cached_but_minus_one_polled(raw):
+    import asyncio
+
+    client = ApcSnmpClient("localhost")
+    with (
+        patch("custom_components.apc_ups_snmp.snmp_client.SnmpEngine"),
+        patch(
+            "custom_components.apc_ups_snmp.snmp_client.UdpTransportTarget.create",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.apc_ups_snmp.snmp_client.get_cmd",
+            new=AsyncMock(
+                return_value=(None, None, 0, [("1.2.3", raw), ("1.2.4", Integer32(-1))])
+            ),
+        ) as request,
+    ):
+        try:
+            assert await client.async_get_multiple([".1.2.3", ".1.2.4"]) == {
+                ".1.2.3": None,
+                ".1.2.4": None,
+            }
+            await client.async_get_multiple([".1.2.3", ".1.2.4"])
+            assert len(request.call_args.args) == 5
+            assert ".1.2.4" in repr(request.call_args.args[-1])
+            assert client._missing_scalars == {".1.2.3"}
+        finally:
+            client.close()
+            await asyncio.to_thread(client._executor.shutdown, wait=True)
+
+
+async def test_pysnmp_construction_error():
+    import asyncio
+
+    from pysnmp.error import PySnmpError
+
+    from custom_components.apc_ups_snmp.snmp_client import SnmpConfigError
+
+    client = ApcSnmpClient("localhost")
+    with patch(
+        "custom_components.apc_ups_snmp.snmp_client.SnmpEngine",
+        side_effect=PySnmpError("bad key"),
+    ):
+        try:
+            with pytest.raises(SnmpConfigError) as error:
+                await client.async_get(".1.2.3")
+            assert error.value.errors == {"base": "invalid_security"}
+        finally:
+            client.close()
+            await asyncio.to_thread(client._executor.shutdown, wait=True)

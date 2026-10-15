@@ -1,11 +1,11 @@
-"""Fixture-backed SNMP reads; tests never send packets."""
+"""Fixture-backed SNMP reads for integration tests."""
 
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
-from custom_components.apc_ups_snmp.snmp_client import ApcSnmpClient
+from custom_components.apc_ups_snmp.snmp_client import _MISSING, ApcSnmpClient
 
 
 def read_walk(name):
@@ -47,7 +47,10 @@ class WalkClient(ApcSnmpClient):
             for index, oid in enumerate(oids, 1):
                 if oid not in data:
                     return {}, index
-        return {oid: None if data.get(oid) == -1 else data.get(oid) for oid in oids}, 0
+        return {
+            oid: None if data.get(oid) == -1 else data.get(oid, _MISSING)
+            for oid in oids
+        }, 0
 
 
 @pytest.fixture(autouse=True)
