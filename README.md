@@ -1,211 +1,75 @@
-# APC UPS Integration - Development Repository
+# APC UPS and ATS SNMP for Home Assistant
 
-Private development repository for the Home Assistant APC UPS SNMP integration.
+Monitor APC Smart-UPS units and APC rack automatic transfer switches directly through their Network Management Card. No NUT server is required. The integration polls locally with SNMP v1, v2c, or v3.
 
-**Public Release Repository:** [homeassistant-apc-ups](https://github.com/scgreenhalgh/homeassistant-apc-ups)
+This integration is **read-only**. It does not send SNMP SET requests and provides no buttons, switches, outlet controls, shutdown commands, or calibration commands.
 
-## Project Structure
+## Install
 
-```
-ha_apc_ups_dev/
-├── custom_components/
-│   └── apc_ups_snmp/
-│       ├── __init__.py          # Integration setup
-│       ├── config_flow.py       # UI configuration
-│       ├── const.py             # Constants & OIDs
-│       ├── coordinator.py       # Data update coordinator
-│       ├── entity.py            # Base entity class
-│       ├── sensor.py            # Sensor entities
-│       ├── binary_sensor.py     # Binary sensor entities
-│       ├── snmp_client.py       # SNMP communication layer
-│       ├── manifest.json        # Integration metadata
-│       ├── strings.json         # UI strings
-│       └── translations/
-│           └── en.json          # English translations
-├── tests/
-│   ├── conftest.py              # Pytest fixtures
-│   ├── test_config_flow.py      # Config flow tests
-│   ├── test_coordinator.py      # Coordinator tests
-│   ├── test_sensor.py           # Sensor tests
-│   └── test_snmp_client.py      # SNMP client tests
-├── docs/
-│   └── snmp_explanation.md      # SNMP protocol documentation
-├── pyproject.toml               # Project configuration
-├── requirements.txt             # Runtime dependencies
-└── requirements_test.txt        # Test dependencies
-```
+1. In HACS, open **Custom repositories**, add `https://github.com/davidcoulson/homeassistant-apc-ups`, and select **Integration**.
+2. Download **APC UPS and ATS SNMP** and restart Home Assistant.
+3. Open **Settings → Devices & services → Add integration → APC UPS and ATS (SNMP)**.
+4. Enter the card's address, UDP port (normally 161), and SNMP version, then its credentials.
 
-## Development Setup
+For manual installation, copy `custom_components/apc_ups_snmp` into your Home Assistant configuration's `custom_components` directory and restart. Home Assistant 2025.1 or newer is required.
 
-### Prerequisites
+Device type is detected automatically. All measurements supported by the card are registered; unsupported OIDs and APC's `-1` sentinel are skipped. Diagnostic measurements are generally disabled by default. Enable them on the device's entity page. Options contain the polling interval (10–300 seconds, default 30). Use **Reconfigure** to change the address or credentials. Authentication failures offer a reauthentication flow.
 
-- Python 3.11+
-- pyenv (recommended)
+Existing entity keys and unique IDs are retained. Legacy entries migrate to the UPS device type automatically. Previous sensor-picker selections no longer limit discovery; individual entity enable/disable settings remain in Home Assistant's entity registry. UPS status now uses NUT status words. Energy scaling is corrected to hundredths of a kWh; historical values recorded with the old scaling may need adjustment in Home Assistant statistics.
 
-### Installation
+## Supported devices
 
-```bash
-# Clone the repository
-git clone https://github.com/scgreenhalgh/ha_apc_ups_dev.git
-cd ha_apc_ups_dev
+- APC Smart-UPS and other UPS models implementing the PowerNet UPS subtree (`318.1.1.1`).
+- APC rack ATS models implementing the PowerNet ATS subtree (`318.1.1.8`), including AP4452A and AP77xx-style output bank tables.
+- NMC cards using v1, v2c, or v3. Actual coverage depends on the model and firmware.
 
-# Create virtual environment
-pyenv virtualenv 3.11.8 ha_apc_ups_dev
-pyenv activate ha_apc_ups_dev
+AP4452A discovery and scaling are tested against a sanitized NMC2 walk; UPS coverage uses a synthetic Smart-UPS fixture. No live hardware is contacted by the tests. Hardware variants may expose only a subset of these entities.
 
-# Install dependencies
-pip install -e ".[dev]"
-```
+## UPS entities
 
-### Running Tests
+| Area | Measurements |
+| --- | --- |
+| Battery | Charge %, runtime (minutes), temperature, voltage, current, total current, nominal voltage, pack count, bad pack count, last replacement date, recommended replacement date, time on battery, restart charge threshold, low-runtime threshold |
+| Input | Voltage, maximum/minimum voltage, frequency, transfer high/low thresholds, sensitivity, last transfer reason, line-failure count, phase count |
+| Output | Voltage, frequency, current, load %, real power (W), apparent power (VA), efficiency, energy (kWh), nominal voltage/frequency, nominal VA and real-power ratings, phase count |
+| Phase tables | Per-phase input voltage/current and voltage extrema; output voltage/current, apparent and real power/load and their extrema |
+| Diagnostics | Internal temperature, manufacture date, self-test result/date, calibration result/date, startup/shutdown delays, ambient temperature/humidity when supported |
+| Outlet groups | Named state sensor for each reported group |
+| Status | Combined NUT words: OL, OB, LB, RB, BYPASS, OFF, TRIM, BOOST, OVER, CAL, ECO |
+| Binary sensors | On battery, low battery, battery replacement needed, overload, on bypass, calibrating |
 
-```bash
-# Run all tests
-pytest tests/ -v
+High-precision measurements take precedence over standard OIDs, with the appropriate scaling applied separately to each alternative. TimeTicks are hundredths of a second. Dates are preserved as reported by the card, including either slash or hyphen separators. Real power is reported only when measured; it is not estimated from an assumed power factor.
 
-# Run with coverage
-pytest tests/ --cov=custom_components.apc_ups_snmp --cov-report=term-missing
+## ATS entities
 
-# Run specific test file
-pytest tests/test_sensor.py -v
+| Area | Measurements |
+| --- | --- |
+| Sources | Selected and preferred source using configured input names (fallback Source A/B), nominal input voltage/frequency, sensitivity |
+| Each input | Named voltage and frequency sensors, source health status, voltage orientation and input type; maximum/minimum voltage, current and apparent power where supported |
+| Output phases | Voltage, current (0.1 A scaling), apparent power (VA), load %, output frequency |
+| Output banks | Current, voltage, real power and load state, where the bank table is supported |
+| Status | Redundancy lost and overcurrent problem sensors; diagnostic communication, switch, source, output, hardware and power-supply fault sensors; front-panel lock and phase synchronization states |
+| Identity | APC manufacturer, model, serial, firmware, name, manufacture date sensor, link to the card's web interface |
 
-# Run single test
-pytest tests/test_config_flow.py::TestConfigFlow::test_form_user_step_appears -v
+The AP4452A output phase power column reports **VA**, not watts. Unsupported output bank columns do not create entities. Input orientation and type are descriptive metadata; source status sensors report health.
+
+## Configure the card
+
+Enable the chosen SNMP protocol in the NMC web interface and create a read-only community or v3 user. Configure the NMC's **SNMP access-control list with Home Assistant's source IP**; enabling SNMP alone is insufficient. Permit UDP 161 through intervening firewalls. A rejected community or access list may appear as a timeout, especially with v1/v2c.
+
+SNMP v1 and v2c send community strings and data in cleartext. Use them only on trusted networks. Prefer SNMP v3 with authentication and privacy where supported. The v3 form supports MD5/SHA-family authentication and DES/3DES/AES-family privacy, subject to the card and pysnmp's crypto dependencies.
+
+Diagnostic downloads contain raw OID values with connection credentials, host, device names and serials redacted. Review remaining device information before sharing.
+
+## Development
+
+```sh
+uv venv --python 3.13 .venv
+uv pip install --python .venv -r requirements-dev.txt
+.venv/bin/pytest -q
+.venv/bin/ruff check .
 ```
 
-### Code Quality
+Tests use fixture-backed SNMP responses and mocked transport calls. Reference driver source is not included. OIDs, enum definitions and scaling are derived from the APC PowerNet MIB and NUT mappings; no GPL driver code is copied.
 
-```bash
-# Linting
-ruff check custom_components/
-
-# Type checking
-mypy custom_components/
-```
-
-## Testing with Real Hardware
-
-```python
-import asyncio
-from custom_components.apc_ups_snmp.snmp_client import ApcSnmpClient
-from custom_components.apc_ups_snmp.const import ApcOid, SNMP_VERSION_3
-
-async def test():
-    client = ApcSnmpClient(
-        host="192.168.0.71",
-        port=161,
-        version=SNMP_VERSION_3,
-        username="homeassistant",
-        auth_protocol="SHA",
-        auth_password="YOUR_AUTH_PASS",
-        priv_protocol="AES",
-        priv_password="YOUR_PRIV_PASS",
-    )
-
-    data = await client.async_get_all_data()
-    print(f"Battery: {data.get(ApcOid.BATTERY_CAPACITY)}%")
-    print(f"Load: {data.get(ApcOid.OUTPUT_LOAD)}%")
-    client.close()
-
-asyncio.run(test())
-```
-
-## Architecture
-
-### Data Flow
-
-```
-┌─────────────┐     ┌─────────────┐     ┌──────────────┐     ┌─────────┐
-│   AP9630    │────▶│ ApcSnmpClient│────▶│ Coordinator  │────▶│ Sensors │
-│    NMC      │SNMP │             │     │              │     │         │
-└─────────────┘     └─────────────┘     └──────────────┘     └─────────┘
-```
-
-### Key Components
-
-| Component | File | Purpose |
-|-----------|------|---------|
-| SNMP Client | `snmp_client.py` | Low-level SNMP communication (v2c/v3) |
-| Coordinator | `coordinator.py` | Polls UPS data at regular intervals |
-| Config Flow | `config_flow.py` | UI-based setup wizard |
-| Sensors | `sensor.py` | Exposes UPS metrics as HA sensors |
-| Binary Sensors | `binary_sensor.py` | On battery, low battery alerts |
-
-### SNMP OIDs
-
-All APC PowerNet MIB OIDs are defined in `const.py`. Key OIDs:
-
-| OID | Description |
-|-----|-------------|
-| `.1.3.6.1.4.1.318.1.1.1.1.1.1.0` | UPS Model |
-| `.1.3.6.1.4.1.318.1.1.1.2.2.1.0` | Battery Capacity |
-| `.1.3.6.1.4.1.318.1.1.1.2.2.3.0` | Runtime Remaining |
-| `.1.3.6.1.4.1.318.1.1.1.4.2.3.0` | Output Load |
-
-## Release Process
-
-To publish a new release to the public repository:
-
-1. Update version in `manifest.json`
-2. Tag the release: `git tag v1.0.0`
-3. Run release script: `./scripts/release.sh v1.0.0`
-
-Or use GitHub Actions (automated on tag push).
-
-## Tested Hardware
-
-| Device | NMC | Status |
-|--------|-----|--------|
-| Smart-UPS 1500 | AP9630 | Working |
-
-## Security Considerations
-
-### SNMP Version Selection
-
-This integration supports both SNMP v2c and SNMP v3:
-
-| Version | Security | Recommendation |
-|---------|----------|----------------|
-| **v2c** | Community string in **cleartext** | Isolated networks only |
-| **v3** | Authentication + encryption | **Recommended** |
-
-#### SNMP v2c Security Warning
-
-When using SNMP v2c, the integration will:
-- Display a security warning during setup
-- Log a warning at each startup
-
-This is intentional to remind users that v2c credentials can be captured by anyone with network access.
-
-#### SNMP v3 Best Practices
-
-For maximum security with SNMP v3:
-
-1. **Authentication Protocol**: Use SHA256 or higher (avoid MD5/SHA1)
-2. **Privacy Protocol**: Use AES256 (avoid DES/3DES)
-3. **Password Strength**: Use strong, unique passwords for both auth and priv
-4. **Network Segmentation**: Keep UPS management traffic on a dedicated VLAN if possible
-
-Example secure configuration:
-```
-Username: homeassistant
-Auth Protocol: SHA256
-Auth Password: <strong unique password>
-Priv Protocol: AES256
-Priv Password: <different strong unique password>
-```
-
-### Credential Storage
-
-SNMP credentials are stored in Home Assistant's configuration database, which is encrypted at rest. Credentials are never logged.
-
-### Input Validation
-
-All user inputs are validated:
-- **Host**: Must be a valid IP address or RFC 1123 compliant hostname
-- **Port**: Bounded integer (1-65535)
-- **Protocols**: Selected from predefined lists (no arbitrary input)
-
-## License
-
-MIT License
+Fork maintained by David Coulson. Based on [Sean Greenhalgh's original integration](https://github.com/scgreenhalgh/homeassistant-apc-ups). Distributed under the original MIT [license](LICENSE).

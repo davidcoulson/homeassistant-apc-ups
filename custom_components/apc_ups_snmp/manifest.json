@@ -1,12 +1,17 @@
 {
   "domain": "apc_ups_snmp",
-  "name": "APC UPS (SNMP)",
-  "codeowners": ["@scgreenhalgh"],
+  "name": "APC UPS and ATS (SNMP)",
+  "codeowners": [
+    "@davidcoulson"
+  ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/scgreenhalgh/homeassistant-apc-ups",
+  "documentation": "https://github.com/davidcoulson/homeassistant-apc-ups",
   "integration_type": "hub",
   "iot_class": "local_polling",
-  "requirements": ["pysnmp>=7.0,<8.0"],
-  "version": "1.0.16"
+  "requirements": [
+    "pysnmp==7.1.30"
+  ],
+  "version": "1.1.0",
+  "issue_tracker": "https://github.com/davidcoulson/homeassistant-apc-ups/issues"
 }
