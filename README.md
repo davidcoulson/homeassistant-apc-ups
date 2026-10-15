@@ -1,6 +1,6 @@
 # APC UPS and ATS SNMP for Home Assistant
 
-Monitor APC Smart-UPS units and APC rack automatic transfer switches directly through their Network Management Card. No NUT server is required. The integration polls locally with SNMP v1, v2c, or v3. Each client reuses its SNMP engine and transport. Table discovery uses GETBULK for v2c/v3 and GETNEXT for v1 at setup, then hourly or when a known cell disappears. Normal polls read cached cells with GET requests of at most 20 bindings.
+Monitor APC Smart-UPS units and APC rack automatic transfer switches directly through their Network Management Card. No NUT server is required. The integration polls locally with SNMP v1, v2c, or v3. Each client reuses its SNMP engine and transport; after a connection failure or timeout, the next request resolves the hostname again. IPv4 and IPv6 literals are supported. Table discovery uses GETBULK for v2c/v3 and GETNEXT for v1 at setup, then hourly or when SNMP reports a cached row missing (at most once every five minutes). Temporary `-1` readings remain in the polling cache. Unsupported scalar OIDs are retried hourly. Normal polls read cached cells with GET requests of at most 20 bindings.
 
 This integration is **read-only**. It does not send SNMP SET requests and provides no buttons, switches, outlet controls, shutdown commands, or calibration commands.
 
@@ -13,7 +13,7 @@ This integration is **read-only**. It does not send SNMP SET requests and provid
 
 For manual installation, copy `custom_components/apc_ups_snmp` into your Home Assistant configuration's `custom_components` directory and restart. Home Assistant 2025.1 or newer is required.
 
-Device type is detected automatically. All measurements supported by the card are registered; unsupported OIDs and APC's `-1` sentinel are skipped. Diagnostic measurements are generally disabled by default. Enable them on the device's entity page. Options contain the polling interval (10–300 seconds, default 30). Use **Reconfigure** to change the address or credentials. Authentication failures offer a reauthentication flow.
+Device type is detected automatically. All measurements supported by the card are registered; unsupported OIDs and APC's `-1` sentinel are skipped. Diagnostic measurements are generally disabled by default. Enable them on the device's entity page. Options contain the polling interval (10–300 seconds, default 30). Newly available measurements and table rows appear automatically without a reload. Use **Reconfigure** to change the address or credentials; forms retain current connection settings, community, username and protocols. Passwords are never prefilled; leave them blank during reconfiguration or reauthentication to keep stored passwords. Authentication failures offer a reauthentication flow.
 
 Existing entity keys and unique IDs are retained. Legacy entries migrate to the UPS device type automatically. Previous sensor-picker selections no longer limit discovery; individual entity enable/disable settings remain in Home Assistant's entity registry. UPS status now uses NUT status words. Energy scaling is corrected to hundredths of a kWh; historical values recorded with the old scaling may need adjustment in Home Assistant statistics.
 
@@ -57,7 +57,7 @@ The AP4452A output phase power column reports **VA**, not watts. Unsupported out
 
 Enable the chosen SNMP protocol in the NMC web interface and create a read-only community or v3 user. Configure the NMC's **SNMP access-control list with Home Assistant's source IP**; enabling SNMP alone is insufficient. Permit UDP 161 through intervening firewalls. A rejected community or access list may appear as a timeout, especially with v1/v2c.
 
-SNMP v1 and v2c send community strings and data in cleartext. Use them only on trusted networks. Prefer SNMP v3 with authentication and privacy where supported. The v3 form supports MD5/SHA-family authentication and DES/3DES/AES-family privacy, subject to the card and pysnmp's crypto dependencies.
+SNMP v1 and v2c send community strings and data in cleartext. Use them only on trusted networks. Prefer SNMP v3 with authentication and privacy where supported. The v3 form supports MD5/SHA-family authentication and DES/3DES/AES-family privacy, subject to the card's support. Select protocols explicitly: authentication requires both a protocol and password; privacy requires authentication and both a privacy protocol and password. All passwords must contain at least eight characters. MD5 and DES are never selected implicitly. pysnmp is pinned to 7.1.29: 7.1.30 imports cipher APIs unavailable in the cryptography version pinned by the tested Home Assistant release.
 
 Diagnostic downloads contain raw OID values with connection credentials, host, device names and serials redacted. Review remaining device information before sharing.
 
@@ -70,7 +70,7 @@ uv pip install --python .venv -r requirements-dev.txt
 .venv/bin/ruff check .
 ```
 
-Tests use fixture-backed SNMP responses and mocked transport calls. Reference driver source is not included. OIDs, enum definitions and scaling are derived from the APC PowerNet MIB and NUT mappings; no GPL driver code is copied.
+Tests use fixture-backed responses, mocked transport calls, and real pysnmp responders bound only to ephemeral ports on `127.0.0.1`. Both walk fixtures are exercised over v1, v2c and v3 SHA/AES, including missing OIDs, bulk termination, authentication failures and timeouts. Reference driver source is not included. OIDs, enum definitions and scaling are derived from the APC PowerNet MIB and NUT mappings; no GPL driver code is copied.
 
 Fork maintained by David Coulson. Based on [Sean Greenhalgh's original integration](https://github.com/scgreenhalgh/homeassistant-apc-ups). Distributed under the original MIT [license](LICENSE).
 
