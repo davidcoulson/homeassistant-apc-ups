@@ -38,7 +38,13 @@
       "invalid_auth": "Authentication failed. Check your credentials.",
       "invalid_host": "Invalid host. Enter a valid IP address or hostname.",
       "timeout": "SNMP request timed out. Check connectivity and the NMC access-control list.",
-      "unknown": "An unexpected error occurred."
+      "unknown": "An unexpected error occurred.",
+      "protocol_required": "Select a protocol for this password.",
+      "password_required": "Enter a password for this protocol.",
+      "password_too_short": "Passwords must contain at least 8 characters.",
+      "privacy_requires_auth": "Privacy requires an authentication protocol and password.",
+      "invalid_protocol": "Select a supported protocol.",
+      "invalid_security": "Invalid SNMP security settings."
     },
     "abort": {
       "already_configured": "This device is already configured.",

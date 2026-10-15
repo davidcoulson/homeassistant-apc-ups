@@ -19,14 +19,26 @@ async def async_setup_entry(hass, entry, async_add_entities):
     """Create all supported measurements, including indexed rows."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
     kind = entry.data.get("device_type", "ups")
-    entities = [
-        ApcUpsSensor(coordinator, entry.entry_id, item)
-        for item in measurements(kind, coordinator.data)
-        if item.value(coordinator.data) is not None
-    ]
-    if kind == "ups" and status(coordinator.data) is not None:
-        entities.append(ApcUpsSensor(coordinator, entry.entry_id, None))
-    async_add_entities(entities)
+    created = set()
+
+    def add_available():
+        entities = [
+            ApcUpsSensor(coordinator, entry.entry_id, item)
+            for item in measurements(kind, coordinator.data or {})
+            if item.value(coordinator.data or {}) is not None
+        ]
+        if kind == "ups" and status(coordinator.data or {}) is not None:
+            entities.append(ApcUpsSensor(coordinator, entry.entry_id, None))
+        new = []
+        for entity in entities:
+            if entity.unique_id not in created:
+                created.add(entity.unique_id)
+                new.append(entity)
+        if new:
+            async_add_entities(new)
+
+    entry.async_on_unload(coordinator.async_add_listener(add_available))
+    add_available()
 
 
 class ApcUpsSensor(ApcUpsEntity, SensorEntity):

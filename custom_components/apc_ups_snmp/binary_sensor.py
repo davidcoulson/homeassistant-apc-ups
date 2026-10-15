@@ -114,17 +114,25 @@ async def async_setup_entry(
             for key, column in ATS_PROBLEMS.items()
         ]
     )
-    entities = [
-        ApcUpsBinarySensor(
-            coordinator=coordinator,
-            entry_id=entry.entry_id,
-            description=description,
-        )
-        for description in descriptions
-        if description.is_on_fn(coordinator.data) is not None
-    ]
+    created = set()
 
-    async_add_entities(entities)
+    def add_available():
+        entities = []
+        for description in descriptions:
+            unique_id = f"{entry.entry_id}_{description.key}"
+            if (
+                unique_id not in created
+                and description.is_on_fn(coordinator.data or {}) is not None
+            ):
+                created.add(unique_id)
+                entities.append(
+                    ApcUpsBinarySensor(coordinator, entry.entry_id, description)
+                )
+        if entities:
+            async_add_entities(entities)
+
+    entry.async_on_unload(coordinator.async_add_listener(add_available))
+    add_available()
 
 
 class ApcUpsBinarySensor(ApcUpsEntity, BinarySensorEntity):

@@ -6,22 +6,13 @@ import logging
 from datetime import timedelta
 from typing import Any
 
-from homeassistant.const import CONF_HOST, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
-    CONF_AUTH_PASSWORD,
-    CONF_AUTH_PROTOCOL,
-    CONF_COMMUNITY,
-    CONF_PRIV_PASSWORD,
-    CONF_PRIV_PROTOCOL,
-    CONF_SNMP_VERSION,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
-    SNMP_VERSION_2C,
-    SNMP_VERSION_3,
 )
 from .snmp_client import (
     ApcSnmpClient,
@@ -56,30 +47,9 @@ class ApcUpsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             update_interval=timedelta(seconds=update_interval),
         )
 
-        self._config_data = config_data
-        self._client = self._create_client()
+        self.config_data = config_data
+        self._client = ApcSnmpClient.from_config(self.config_data)
         self._client.device_type = config_data.get("device_type", "ups")
-
-    def _create_client(self) -> ApcSnmpClient:
-        """Create an SNMP client from config data."""
-        if self._config_data.get(CONF_SNMP_VERSION) in ("v1", SNMP_VERSION_2C):
-            return ApcSnmpClient(
-                host=self._config_data[CONF_HOST],
-                port=self._config_data[CONF_PORT],
-                version=self._config_data.get(CONF_SNMP_VERSION, SNMP_VERSION_2C),
-                community=self._config_data.get(CONF_COMMUNITY),
-            )
-        else:
-            return ApcSnmpClient(
-                host=self._config_data[CONF_HOST],
-                port=self._config_data[CONF_PORT],
-                version=SNMP_VERSION_3,
-                username=self._config_data.get(CONF_USERNAME),
-                auth_protocol=self._config_data.get(CONF_AUTH_PROTOCOL),
-                auth_password=self._config_data.get(CONF_AUTH_PASSWORD),
-                priv_protocol=self._config_data.get(CONF_PRIV_PROTOCOL),
-                priv_password=self._config_data.get(CONF_PRIV_PASSWORD),
-            )
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from the UPS.

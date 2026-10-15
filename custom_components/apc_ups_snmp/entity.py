@@ -33,13 +33,21 @@ class ApcUpsEntity(CoordinatorEntity[ApcUpsCoordinator]):
     def device_info(self) -> DeviceInfo:
         """Return device information."""
         data = self.coordinator.data or {}
-        identity = IDENTITY[self.coordinator._config_data.get("device_type", "ups")]
+        config = self.coordinator.config_data
+        kind = config.get("device_type", "ups")
+        identity = IDENTITY[kind]
+        entry = self.coordinator.hass.config_entries.async_get_entry(self._entry_id)
+        host = config["host"]
+        if ":" in host:
+            host = f"[{host}]"
         return DeviceInfo(
             identifiers={(DOMAIN, self._entry_id)},
-            name=data.get(identity["name"], "APC UPS"),
+            name=data.get(identity["name"])
+            or (entry.title if entry else None)
+            or f"APC {kind.upper()}",
             manufacturer="APC by Schneider Electric",
-            model=data.get(identity["model"], "Unknown"),
+            model=data.get(identity["model"]) or "Unknown",
             sw_version=data.get(identity["firmware"]),
-            configuration_url="http://" + self.coordinator._config_data["host"],
+            configuration_url="http://" + host,
             serial_number=data.get(identity["serial"]),
         )

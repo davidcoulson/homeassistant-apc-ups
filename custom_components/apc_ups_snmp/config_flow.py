@@ -44,8 +44,10 @@ from .const import (
 from .snmp_client import (
     ApcSnmpClient,
     SnmpAuthError,
+    SnmpConfigError,
     SnmpConnectionError,
     SnmpTimeoutError,
+    validate_v3,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,6 +98,8 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            user_input = {**self._data, **user_input}
+            self._data.update(user_input)
             # Validate host input
             host = user_input.get(CONF_HOST, "").strip()
             if not _validate_host(host):
@@ -119,9 +123,10 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_PORT, default=self._data.get(CONF_PORT, DEFAULT_PORT)
                     ): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
-                    vol.Required(CONF_SNMP_VERSION, default=SNMP_VERSION_2C): vol.In(
-                        ["v1", SNMP_VERSION_2C, SNMP_VERSION_3]
-                    ),
+                    vol.Required(
+                        CONF_SNMP_VERSION,
+                        default=self._data.get(CONF_SNMP_VERSION, SNMP_VERSION_2C),
+                    ): vol.In(["v1", SNMP_VERSION_2C, SNMP_VERSION_3]),
                 }
             ),
             errors=errors,
@@ -134,20 +139,13 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            for key in (
-                CONF_COMMUNITY,
-                CONF_USERNAME,
-                CONF_AUTH_PROTOCOL,
-                CONF_AUTH_PASSWORD,
-                CONF_PRIV_PROTOCOL,
-                CONF_PRIV_PASSWORD,
-            ):
-                self._data.pop(key, None)
-            self._data.update(user_input)
+            self._update_credentials(user_input)
 
             # Test connection
             error = await self._test_connection()
-            if error:
+            if isinstance(error, dict):
+                errors.update(error)
+            elif error:
                 errors["base"] = error
             else:
                 # Check for duplicate
@@ -161,7 +159,9 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="auth_v2c",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_COMMUNITY, default="public"): str,
+                    vol.Required(
+                        CONF_COMMUNITY, default=self._data.get(CONF_COMMUNITY, "public")
+                    ): str,
                 }
             ),
             errors=errors,
@@ -174,28 +174,20 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            for key in (
-                CONF_COMMUNITY,
-                CONF_USERNAME,
-                CONF_AUTH_PROTOCOL,
-                CONF_AUTH_PASSWORD,
-                CONF_PRIV_PROTOCOL,
-                CONF_PRIV_PASSWORD,
-            ):
-                self._data.pop(key, None)
-            self._data.update(user_input)
+            self._update_credentials(user_input)
 
-            # Test connection
-            error = await self._test_connection()
-            if error:
-                errors["base"] = error
-            else:
-                # Check for duplicate
-                await self.async_set_unique_id(self._ups_identity.get("serial"))
-                if self.source not in ("reauth", "reconfigure"):
-                    self._abort_if_unique_id_configured()
-
-                return await self.async_step_sensors()
+            errors = validate_v3(self._data)
+            if not errors:
+                error = await self._test_connection()
+                if isinstance(error, dict):
+                    errors.update(error)
+                elif error:
+                    errors["base"] = error
+                else:
+                    await self.async_set_unique_id(self._ups_identity.get("serial"))
+                    if self.source not in ("reauth", "reconfigure"):
+                        self._abort_if_unique_id_configured()
+                    return await self.async_step_sensors()
 
         # Build options for selectors
         auth_options = [
@@ -209,10 +201,16 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="auth_v3",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_USERNAME): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.TEXT)
-                    ),
-                    vol.Optional(CONF_AUTH_PROTOCOL): SelectSelector(
+                    vol.Required(
+                        CONF_USERNAME,
+                        description={"suggested_value": self._data.get(CONF_USERNAME)},
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                    vol.Optional(
+                        CONF_AUTH_PROTOCOL,
+                        description={
+                            "suggested_value": self._data.get(CONF_AUTH_PROTOCOL)
+                        },
+                    ): SelectSelector(
                         SelectSelectorConfig(
                             options=auth_options,
                             mode="dropdown",
@@ -221,7 +219,12 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Optional(CONF_AUTH_PASSWORD): TextSelector(
                         TextSelectorConfig(type=TextSelectorType.PASSWORD)
                     ),
-                    vol.Optional(CONF_PRIV_PROTOCOL): SelectSelector(
+                    vol.Optional(
+                        CONF_PRIV_PROTOCOL,
+                        description={
+                            "suggested_value": self._data.get(CONF_PRIV_PROTOCOL)
+                        },
+                    ): SelectSelector(
                         SelectSelectorConfig(
                             options=priv_options,
                             mode="dropdown",
@@ -234,6 +237,24 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ),
             errors=errors,
         )
+
+    def _update_credentials(self, user_input):
+        """Keep blank stored passwords while retaining non-secret form input."""
+        if self._data.get(CONF_SNMP_VERSION) in ("v1", SNMP_VERSION_2C):
+            for key in (
+                CONF_USERNAME,
+                CONF_AUTH_PROTOCOL,
+                CONF_AUTH_PASSWORD,
+                CONF_PRIV_PROTOCOL,
+                CONF_PRIV_PASSWORD,
+            ):
+                self._data.pop(key, None)
+        else:
+            self._data.pop(CONF_COMMUNITY, None)
+        for key, value in user_input.items():
+            if key in (CONF_AUTH_PASSWORD, CONF_PRIV_PASSWORD) and not value:
+                continue
+            self._data[key] = value
 
     async def async_step_sensors(self, user_input=None):
         """Finish setup after detection, without a sensor picker."""
@@ -281,20 +302,24 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._data = dict(self._get_reconfigure_entry().data)
         return await self.async_step_user(user_input)
 
-    async def _test_connection(self) -> str | None:
+    async def _test_connection(self) -> str | dict[str, str] | None:
         """Test the SNMP connection and get UPS identity.
 
         Returns:
             Error string if connection failed, None if successful.
         """
-        client = self._create_client()
-
+        client = None
         try:
+            client = ApcSnmpClient.from_config(self._data)
             if not await client.async_test_connection():
                 return "cannot_connect"
             self._data["device_type"] = client.device_type
             self._ups_identity = await client.async_get_identity()
             return None
+        except SnmpConfigError as err:
+            return err.errors
+        except (ValueError, TypeError):
+            return "invalid_security"
         except SnmpTimeoutError:
             return "timeout"
         except SnmpAuthError:
@@ -305,28 +330,8 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.exception("Unexpected error during connection test")
             return "unknown"
         finally:
-            client.close()
-
-    def _create_client(self) -> ApcSnmpClient:
-        """Create an SNMP client from the current data."""
-        if self._data.get(CONF_SNMP_VERSION) in ("v1", SNMP_VERSION_2C):
-            return ApcSnmpClient(
-                host=self._data[CONF_HOST],
-                port=self._data[CONF_PORT],
-                version=self._data.get(CONF_SNMP_VERSION, SNMP_VERSION_2C),
-                community=self._data.get(CONF_COMMUNITY),
-            )
-        else:
-            return ApcSnmpClient(
-                host=self._data[CONF_HOST],
-                port=self._data[CONF_PORT],
-                version=SNMP_VERSION_3,
-                username=self._data.get(CONF_USERNAME),
-                auth_protocol=self._data.get(CONF_AUTH_PROTOCOL),
-                auth_password=self._data.get(CONF_AUTH_PASSWORD),
-                priv_protocol=self._data.get(CONF_PRIV_PROTOCOL),
-                priv_password=self._data.get(CONF_PRIV_PASSWORD),
-            )
+            if client is not None:
+                client.close()
 
     @staticmethod
     @callback
