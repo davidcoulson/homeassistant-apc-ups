@@ -416,8 +416,15 @@ async def test_pysnmp_construction_error():
 async def test_unresolvable_host_is_connection_error():
     """A DNS failure is a connection problem, not bad security settings."""
     client = ApcSnmpClient("does-not-resolve.invalid", version="v1", community="x")
-    try:
-        with pytest.raises(SnmpConnectionError):
-            await client.async_get_multiple([".1.3.6.1.2.1.1.1.0"])
-    finally:
-        client.close()
+    import asyncio
+
+    with patch(
+        "custom_components.apc_ups_snmp.snmp_client.UdpTransportTarget.create",
+        new=AsyncMock(side_effect=OSError("Name or service not known")),
+    ):
+        try:
+            with pytest.raises(SnmpConnectionError):
+                await client.async_get_multiple([".1.3.6.1.2.1.1.1.0"])
+        finally:
+            client.close()
+            await asyncio.to_thread(client._executor.shutdown, wait=True)

@@ -19,7 +19,7 @@ from custom_components.apc_ups_snmp.snmp_client import (
 
 from .conftest import read_walk
 
-pytestmark = pytest.mark.enable_socket
+pytestmark = pytest.mark.usefixtures("socket_enabled")
 
 
 @pytest.fixture(params=[("smartups.walk", "ups"), ("ap4452a.walk", "ats")])
