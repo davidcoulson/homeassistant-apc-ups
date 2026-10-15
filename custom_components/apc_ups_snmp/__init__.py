@@ -30,9 +30,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug("Setting up APC UPS SNMP integration: %s", entry.title)
 
     # Warn about SNMP v2c security implications
-    if entry.data.get(CONF_SNMP_VERSION) == SNMP_VERSION_2C:
+    if entry.data.get(CONF_SNMP_VERSION) in ("v1", SNMP_VERSION_2C):
         _LOGGER.warning(
-            "APC UPS '%s' is using SNMP v2c which transmits credentials in plaintext. "
+            "APC UPS '%s' is using SNMP v1/v2c which transmits credentials in plaintext. "
             "Consider reconfiguring with SNMP v3 for better security",
             entry.title,
         )
@@ -100,3 +100,16 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """
     _LOGGER.debug("Updating options for APC UPS SNMP: %s", entry.title)
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_migrate_entry(hass, entry):
+    """Preserve entity IDs and default legacy entries to UPS."""
+    if entry.version > 2:
+        return False
+    if entry.version == 1:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, "device_type": entry.data.get("device_type", "ups")},
+            version=2,
+        )
+    return True

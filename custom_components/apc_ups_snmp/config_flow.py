@@ -9,7 +9,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_PORT, CONF_USERNAME
+from homeassistant.const import CONF_HOST, CONF_PORT, CONF_SCAN_INTERVAL, CONF_USERNAME
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.selector import (
@@ -24,8 +24,6 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from homeassistant.const import CONF_SCAN_INTERVAL
-
 from .const import (
     AUTH_PROTOCOLS,
     CONF_AUTH_PASSWORD,
@@ -33,7 +31,6 @@ from .const import (
     CONF_COMMUNITY,
     CONF_PRIV_PASSWORD,
     CONF_PRIV_PROTOCOL,
-    CONF_SENSORS,
     CONF_SNMP_VERSION,
     DEFAULT_PORT,
     DEFAULT_SCAN_INTERVAL,
@@ -82,41 +79,10 @@ def _validate_host(host: str) -> bool:
     return bool(_HOSTNAME_REGEX.match(host))
 
 
-# Available sensors for selection
-AVAILABLE_SENSORS = {
-    "battery_capacity": "Battery Capacity",
-    "battery_runtime": "Battery Runtime",
-    "battery_temperature": "Battery Temperature",
-    "battery_voltage": "Battery Voltage",
-    "time_on_battery": "Time On Battery",
-    "input_voltage": "Input Voltage",
-    "input_frequency": "Input Frequency",
-    "last_transfer_cause": "Last Transfer Cause",
-    "output_voltage": "Output Voltage",
-    "output_frequency": "Output Frequency",
-    "output_load": "Output Load",
-    "output_current": "Output Current",
-    "output_power": "Output Power",
-    "output_efficiency": "Output Efficiency",
-    "output_energy": "Output Energy",
-    "ups_status": "UPS Status",
-}
-
-# Default sensors to enable
-DEFAULT_SENSORS = [
-    "battery_capacity",
-    "battery_runtime",
-    "output_load",
-    "output_power",
-    "last_transfer_cause",
-    "ups_status",
-]
-
-
 class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for APC UPS SNMP."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -138,7 +104,7 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 user_input[CONF_HOST] = host  # Use trimmed value
                 self._data.update(user_input)
 
-                if user_input[CONF_SNMP_VERSION] == SNMP_VERSION_2C:
+                if user_input[CONF_SNMP_VERSION] in ("v1", SNMP_VERSION_2C):
                     return await self.async_step_auth_v2c()
                 else:
                     return await self.async_step_auth_v3()
@@ -147,10 +113,14 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_HOST): str,
-                    vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
+                    vol.Required(
+                        CONF_HOST, default=self._data.get(CONF_HOST, vol.UNDEFINED)
+                    ): str,
+                    vol.Required(
+                        CONF_PORT, default=self._data.get(CONF_PORT, DEFAULT_PORT)
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
                     vol.Required(CONF_SNMP_VERSION, default=SNMP_VERSION_2C): vol.In(
-                        [SNMP_VERSION_2C, SNMP_VERSION_3]
+                        ["v1", SNMP_VERSION_2C, SNMP_VERSION_3]
                     ),
                 }
             ),
@@ -164,6 +134,15 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            for key in (
+                CONF_COMMUNITY,
+                CONF_USERNAME,
+                CONF_AUTH_PROTOCOL,
+                CONF_AUTH_PASSWORD,
+                CONF_PRIV_PROTOCOL,
+                CONF_PRIV_PASSWORD,
+            ):
+                self._data.pop(key, None)
             self._data.update(user_input)
 
             # Test connection
@@ -173,7 +152,8 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 # Check for duplicate
                 await self.async_set_unique_id(self._ups_identity.get("serial"))
-                self._abort_if_unique_id_configured()
+                if self.source not in ("reauth", "reconfigure"):
+                    self._abort_if_unique_id_configured()
 
                 return await self.async_step_sensors()
 
@@ -194,6 +174,15 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            for key in (
+                CONF_COMMUNITY,
+                CONF_USERNAME,
+                CONF_AUTH_PROTOCOL,
+                CONF_AUTH_PASSWORD,
+                CONF_PRIV_PROTOCOL,
+                CONF_PRIV_PASSWORD,
+            ):
+                self._data.pop(key, None)
             self._data.update(user_input)
 
             # Test connection
@@ -203,7 +192,8 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 # Check for duplicate
                 await self.async_set_unique_id(self._ups_identity.get("serial"))
-                self._abort_if_unique_id_configured()
+                if self.source not in ("reauth", "reconfigure"):
+                    self._abort_if_unique_id_configured()
 
                 return await self.async_step_sensors()
 
@@ -245,44 +235,51 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_sensors(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle sensor selection step."""
-        if user_input is not None:
-            self._data[CONF_SENSORS] = user_input.get(CONF_SENSORS, DEFAULT_SENSORS)
-
-            return self.async_create_entry(
-                title=self._ups_identity.get("model", "APC UPS"),
-                data=self._data,
+    async def async_step_sensors(self, user_input=None):
+        """Finish setup after detection, without a sensor picker."""
+        if self.source in ("reauth", "reconfigure"):
+            entry = (
+                self._get_reauth_entry()
+                if self.source == "reauth"
+                else self._get_reconfigure_entry()
             )
-
-        # Build options for multi-select
-        sensor_options = [
-            SelectOptionDict(value=key, label=label)
-            for key, label in AVAILABLE_SENSORS.items()
-        ]
-
-        return self.async_show_form(
-            step_id="sensors",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_SENSORS, default=DEFAULT_SENSORS
-                    ): SelectSelector(
-                        SelectSelectorConfig(
-                            options=sensor_options,
-                            multiple=True,
-                            mode="list",
-                        )
-                    ),
-                }
-            ),
-            description_placeholders={
-                "model": self._ups_identity.get("model", "Unknown"),
-                "serial": self._ups_identity.get("serial", "Unknown"),
-            },
+            if (
+                entry.unique_id
+                and self._ups_identity.get("serial") != entry.unique_id
+                and self._ups_identity.get("manufacture_date") != entry.unique_id
+            ):
+                return self.async_abort(reason="device_mismatch")
+            return self.async_update_reload_and_abort(
+                entry,
+                data=self._data,
+                reason="reauth_successful"
+                if self.source == "reauth"
+                else "reconfigure_successful",
+            )
+        return self.async_create_entry(
+            title=self._ups_identity.get("model") or "APC",
+            data=self._data,
         )
+
+    async def async_step_reauth(self, entry_data):
+        """Change credentials after an authentication failure."""
+        self._data = dict(entry_data)
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(self, user_input=None):
+        if user_input is not None:
+            if self._data.get(CONF_SNMP_VERSION) in ("v1", SNMP_VERSION_2C):
+                return await self.async_step_auth_v2c()
+            return await self.async_step_auth_v3()
+        return self.async_show_form(
+            step_id="reauth_confirm", data_schema=vol.Schema({})
+        )
+
+    async def async_step_reconfigure(self, user_input=None):
+        """Use the normal connection forms to change host or credentials."""
+        if not self._data:
+            self._data = dict(self._get_reconfigure_entry().data)
+        return await self.async_step_user(user_input)
 
     async def _test_connection(self) -> str | None:
         """Test the SNMP connection and get UPS identity.
@@ -293,7 +290,9 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         client = self._create_client()
 
         try:
-            await client.async_test_connection()
+            if not await client.async_test_connection():
+                return "cannot_connect"
+            self._data["device_type"] = client.device_type
             self._ups_identity = await client.async_get_identity()
             return None
         except SnmpTimeoutError:
@@ -302,7 +301,7 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return "invalid_auth"
         except SnmpConnectionError:
             return "cannot_connect"
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOGGER.exception("Unexpected error during connection test")
             return "unknown"
         finally:
@@ -310,11 +309,11 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def _create_client(self) -> ApcSnmpClient:
         """Create an SNMP client from the current data."""
-        if self._data.get(CONF_SNMP_VERSION) == SNMP_VERSION_2C:
+        if self._data.get(CONF_SNMP_VERSION) in ("v1", SNMP_VERSION_2C):
             return ApcSnmpClient(
                 host=self._data[CONF_HOST],
                 port=self._data[CONF_PORT],
-                version=SNMP_VERSION_2C,
+                version=self._data.get(CONF_SNMP_VERSION, SNMP_VERSION_2C),
                 community=self._data.get(CONF_COMMUNITY),
             )
         else:
@@ -358,18 +357,9 @@ class ApcUpsSnmpOptionsFlow(config_entries.OptionsFlow):
         # Use framework-provided config_entry if available, else use stored one
         entry = getattr(self, "config_entry", None) or self._entry
 
-        current_sensors = entry.options.get(
-            CONF_SENSORS, entry.data.get(CONF_SENSORS, DEFAULT_SENSORS)
-        )
         current_scan_interval = entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
         )
-
-        # Build options for multi-select
-        sensor_options = [
-            SelectOptionDict(value=key, label=label)
-            for key, label in AVAILABLE_SENSORS.items()
-        ]
 
         return self.async_show_form(
             step_id="init",
@@ -384,15 +374,6 @@ class ApcUpsSnmpOptionsFlow(config_entries.OptionsFlow):
                             step=5,
                             unit_of_measurement="seconds",
                             mode=NumberSelectorMode.SLIDER,
-                        )
-                    ),
-                    vol.Required(
-                        CONF_SENSORS, default=current_sensors
-                    ): SelectSelector(
-                        SelectSelectorConfig(
-                            options=sensor_options,
-                            multiple=True,
-                            mode="list",
                         )
                     ),
                 }

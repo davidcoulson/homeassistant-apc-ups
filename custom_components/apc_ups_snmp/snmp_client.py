@@ -8,8 +8,6 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-# Use async pysnmp API but run it in a thread with its own event loop
-# to avoid blocking the Home Assistant event loop
 from pysnmp.hlapi.v3arch.asyncio import (
     CommunityData,
     ContextData,
@@ -19,21 +17,26 @@ from pysnmp.hlapi.v3arch.asyncio import (
     UdpTransportTarget,
     UsmUserData,
     get_cmd,
-)
-from pysnmp.hlapi.v3arch.asyncio import (
-    usmDESPrivProtocol,
+    next_cmd,
+    usm3DESEDEPrivProtocol,
     usmAesCfb128Protocol,
     usmAesCfb192Protocol,
     usmAesCfb256Protocol,
-    usm3DESEDEPrivProtocol,
-    usmHMACMD5AuthProtocol,
-    usmHMACSHAAuthProtocol,
+    usmDESPrivProtocol,
     usmHMAC128SHA224AuthProtocol,
     usmHMAC192SHA256AuthProtocol,
     usmHMAC256SHA384AuthProtocol,
     usmHMAC384SHA512AuthProtocol,
+    usmHMACMD5AuthProtocol,
+    usmHMACSHAAuthProtocol,
 )
 
+# Use async pysnmp API but run it in a thread with its own event loop
+# to avoid blocking the Home Assistant event loop
+from pysnmp.proto.rfc1902 import OctetString
+from pysnmp.proto.rfc1905 import EndOfMibView, NoSuchInstance, NoSuchObject
+
+from .catalog import ATS, IDENTITY, UPS, UPS_MEASUREMENTS
 from .const import (
     AUTH_PROTOCOL_MD5,
     AUTH_PROTOCOL_SHA,
@@ -160,8 +163,10 @@ class ApcSnmpClient:
 
     def _get_auth_data(self) -> CommunityData | UsmUserData:
         """Get the authentication data based on SNMP version."""
-        if self.version == "v2c":
-            return CommunityData(self.community or "public")
+        if self.version in ("v1", "v2c"):
+            return CommunityData(
+                self.community or "public", mpModel=0 if self.version == "v1" else 1
+            )
 
         # SNMP v3
         auth_proto = None
@@ -188,151 +193,105 @@ class ApcSnmpClient:
         for MIB loading, DNS resolution, etc.) that would block the Home
         Assistant event loop.
         """
+
         def run_coro():
             return asyncio.run(coro_func())
+
         return run_coro
 
-    async def _async_execute_get(self, oid: str) -> Any:
-        """Execute a single SNMP GET request.
+    @staticmethod
+    def _check_error(indication, status):
+        """Classify transport and authorization failures."""
+        message = " ".join(str(value) for value in (indication, status) if value)
+        lowered = message.lower()
+        if any(
+            word in lowered
+            for word in ("auth", "unknownusername", "digest", "decryption")
+        ):
+            raise SnmpAuthError(message)
+        if indication:
+            if "timeout" in lowered or "timed out" in lowered:
+                raise SnmpTimeoutError(message)
+            raise SnmpConnectionError(message)
 
-        The actual SNMP operation runs in a thread with its own event loop
-        to avoid blocking the main event loop with pysnmp's file I/O.
-        """
-        async def do_snmp():
+    async def _request(self, oids, walk=False):
+        """Run one bounded read in the dedicated executor."""
+
+        async def operation():
+            engine = SnmpEngine()
             try:
-                engine = SnmpEngine()
                 target = await UdpTransportTarget.create(
-                    (self.host, self.port),
-                    timeout=self.timeout,
-                    retries=1,
+                    (self.host, self.port), timeout=self.timeout, retries=1
                 )
-
-                error_indication, error_status, error_index, var_binds = await get_cmd(
+                command = next_cmd if walk else get_cmd
+                indication, status, index, binds = await command(
                     engine,
                     self._get_auth_data(),
                     target,
                     ContextData(),
-                    ObjectType(ObjectIdentity(oid)),
+                    *(ObjectType(ObjectIdentity(oid)) for oid in oids),
+                    lookupMib=False,
                 )
-
-                if error_indication:
-                    error_str = str(error_indication)
-                    if "timeout" in error_str.lower():
-                        raise SnmpTimeoutError(f"Request timed out after {self.timeout} seconds")
-                    if "unknown" in error_str.lower() or "auth" in error_str.lower():
-                        raise SnmpAuthError(f"Authentication failed - check credentials: {error_str}")
-                    raise SnmpConnectionError(f"Unable to connect to {self.host}:{self.port}: {error_str}")
-
-                if error_status:
-                    error_msg = error_status.prettyPrint()
-                    if "authorization" in error_msg.lower() or "auth" in error_msg.lower():
-                        raise SnmpAuthError(f"Authentication failed - check community string: {error_msg}")
-                    # Safely get the OID that caused the error
-                    error_oid = "?"
-                    if error_index and var_binds and int(error_index) <= len(var_binds):
-                        error_oid = str(var_binds[int(error_index) - 1][0])
-                    _LOGGER.warning(
-                        "SNMP error at %s: %s",
-                        error_oid,
-                        error_msg,
-                    )
-                    return None
-
-                if var_binds:
-                    _, value = var_binds[0]
-                    if hasattr(value, "prettyPrint"):
-                        pretty_value = value.prettyPrint()
-                        if "no such" in pretty_value.lower():
-                            return None
-                    return self._parse_value(value)
-
-                return None
-
-            except (SnmpConnectionError, SnmpTimeoutError, SnmpAuthError):
+                self._check_error(indication, status)
+                if status:
+                    return {}, int(index or -1)
+                return {
+                    "." + str(oid).lstrip("."): self._parse_value(value)
+                    for oid, value in binds
+                }, 0
+            except SnmpError:
                 raise
             except Exception as err:
-                raise SnmpConnectionError(f"Unable to connect to {self.host}:{self.port}: {err}") from err
+                raise SnmpConnectionError(str(err)) from err
+            finally:
+                engine.close_dispatcher()
 
-        # Run the SNMP operation in a thread with its own event loop
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(_get_executor(), self._run_snmp_in_thread(do_snmp))
+        return await asyncio.get_running_loop().run_in_executor(
+            _get_executor(), self._run_snmp_in_thread(operation)
+        )
 
-    async def _async_execute_get_multiple(self, oids: list[str]) -> dict[str, Any]:
-        """Execute multiple SNMP GET requests in a single operation.
+    async def _async_execute_get(self, oid):
+        return (await self.async_get_multiple([oid])).get(oid)
 
-        The actual SNMP operation runs in a thread with its own event loop
-        to avoid blocking the main event loop with pysnmp's file I/O.
-        """
-        async def do_snmp():
-            results: dict[str, Any] = {}
-
-            try:
-                engine = SnmpEngine()
-                target = await UdpTransportTarget.create(
-                    (self.host, self.port),
-                    timeout=self.timeout,
-                    retries=1,
-                )
-
-                object_types = [ObjectType(ObjectIdentity(oid)) for oid in oids]
-
-                error_indication, error_status, error_index, var_binds = await get_cmd(
-                    engine,
-                    self._get_auth_data(),
-                    target,
-                    ContextData(),
-                    *object_types,
-                )
-
-                if error_indication:
-                    error_str = str(error_indication)
-                    if "timeout" in error_str.lower():
-                        raise SnmpTimeoutError(f"Request timed out after {self.timeout} seconds")
-                    if "unknown" in error_str.lower() or "auth" in error_str.lower():
-                        raise SnmpAuthError(f"Authentication failed: {error_str}")
-                    raise SnmpConnectionError(f"Unable to connect to {self.host}:{self.port}: {error_str}")
-
-                if error_status:
-                    # Safely get the OID that caused the error
-                    error_oid = "?"
-                    if error_index and var_binds and int(error_index) <= len(var_binds):
-                        error_oid = str(var_binds[int(error_index) - 1][0])
-                    _LOGGER.warning(
-                        "SNMP error at %s: %s",
-                        error_oid,
-                        error_status.prettyPrint(),
-                    )
-
-                for var_bind in var_binds:
-                    oid_obj, value = var_bind
-                    oid_str = str(oid_obj)
-                    # Normalize OID format (ensure leading dot)
-                    if not oid_str.startswith("."):
-                        oid_str = "." + oid_str
-                    results[oid_str] = self._parse_value(value)
-
-                return results
-
-            except (SnmpConnectionError, SnmpTimeoutError, SnmpAuthError):
-                raise
-            except Exception as err:
-                raise SnmpConnectionError(f"Unable to connect to {self.host}:{self.port}: {err}") from err
-
-        # Run the SNMP operation in a thread with its own event loop
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(_get_executor(), self._run_snmp_in_thread(do_snmp))
+    async def async_walk(self, root):
+        """GETNEXT works for all versions; stop at subtree/end/nonprogress."""
+        result = {}
+        cursor = root
+        for _ in range(10000):
+            values, error = await self._request([cursor], walk=True)
+            if error or not values:
+                break
+            oid, value = next(iter(values.items()))
+            if not oid.startswith(root + ".") or tuple(
+                map(int, oid.strip(".").split("."))
+            ) <= tuple(map(int, cursor.strip(".").split("."))):
+                break
+            # Unsupported cells still advance the cursor.
+            result[oid] = value
+            cursor = oid
+        return result
 
     def _parse_value(self, value: Any) -> Any:
         """Parse an SNMP value to a Python type."""
-        if value is None:
+        if value is None or isinstance(
+            value, (NoSuchObject, NoSuchInstance, EndOfMibView)
+        ):
+            return None
+        if isinstance(value, (int, float)) and value == -1:
             return None
 
         # Check for noSuchObject or noSuchInstance
         if hasattr(value, "prettyPrint"):
             pretty_value = value.prettyPrint()
             # Case-insensitive check for "no such" (handles "noSuchObject", "No Such Object", etc.)
-            if "no such" in pretty_value.lower():
+            if any(
+                word in pretty_value.lower().replace(" ", "")
+                for word in ("nosuch", "endofmib")
+            ):
                 return None
+
+        if isinstance(value, OctetString):
+            return value.prettyPrint()
 
         # Try to get the Python value
         if hasattr(value, "prettyPrint"):
@@ -340,7 +299,7 @@ class ApcSnmpClient:
 
             # Try integer first
             try:
-                return int(str_value)
+                return None if int(str_value) == -1 else int(str_value)
             except ValueError:
                 pass
 
@@ -355,42 +314,75 @@ class ApcSnmpClient:
 
         return value
 
-    async def async_test_connection(self) -> bool:
-        """Test the SNMP connection by querying the UPS model."""
-        result = await self._async_execute_get(ApcOid.MODEL)
-        return result is not None
+    async def async_detect_device(self):
+        """Probe identity; reject unrelated SNMP agents."""
+        if await self.async_get(IDENTITY["ats"]["model"]) is not None:
+            self.device_type = "ats"
+        elif await self.async_get(IDENTITY["ups"]["model"]) is not None:
+            self.device_type = "ups"
+        else:
+            raise SnmpConnectionError("No supported APC UPS or ATS identity")
+        return self.device_type
 
-    async def async_get(self, oid: str) -> Any:
-        """Get a single OID value."""
+    async def async_test_connection(self):
+        await self.async_detect_device()
+        return True
+
+    async def async_get(self, oid):
         return await self._async_execute_get(oid)
 
-    async def async_get_multiple(self, oids: list[str]) -> dict[str, Any]:
-        """Get multiple OID values in a single request."""
-        return await self._async_execute_get_multiple(oids)
+    async def async_get_multiple(self, oids):
+        """Limit PDUs to 20 bindings, isolate v1 noSuchName failures."""
+        result = {}
+        for start in range(0, len(oids), 20):
+            pending = list(oids[start : start + 20])
+            while pending:
+                values, error = await self._request(pending)
+                if not error:
+                    result.update(values)
+                    break
+                # v1 rejects the entire PDU for a missing OID.
+                if 0 < error <= len(pending):
+                    result[pending.pop(error - 1)] = None
+                elif len(pending) > 1:
+                    for oid in pending:
+                        result[oid] = await self.async_get(oid)
+                    break
+                else:
+                    result[pending[0]] = None
+                    break
+        return result
 
-    async def async_get_identity(self) -> dict[str, Any]:
-        """Get UPS identity information."""
-        oids = ApcOid.identity_oids()
-        results = await self.async_get_multiple(oids)
-        return {
-            "model": results.get(ApcOid.MODEL),
-            "name": results.get(ApcOid.NAME),
-            "firmware": results.get(ApcOid.FIRMWARE),
-            "serial": results.get(ApcOid.SERIAL),
-        }
+    async def async_get_identity(self):
+        kind = getattr(self, "device_type", None) or await self.async_detect_device()
+        mapping = IDENTITY[kind]
+        data = await self.async_get_multiple(list(mapping.values()))
+        return {key: data.get(oid) for key, oid in mapping.items()}
 
-    async def async_get_all_data(self) -> dict[str, Any]:
-        """Get all sensor data from the UPS."""
-        all_oids = (
-            ApcOid.identity_oids()
-            + ApcOid.all_sensor_oids()
-            + ApcOid.binary_sensor_oids()
-        )
-        # Remove duplicates while preserving order
-        unique_oids = list(dict.fromkeys(all_oids))
-        return await self.async_get_multiple(unique_oids)
+    async def async_get_all_data(self):
+        kind = getattr(self, "device_type", "ups")
+        oids = list(IDENTITY[kind].values())
+        if kind == "ats":
+            oids += [ATS + f".5.1.{i}.0" for i in range(1, 23)]
+            oids += [ATS + s for s in (".1.7.0", ".1.8.0", ".4.2.0", ".4.4.0")]
+            roots = [
+                ATS + ".5.3.2",
+                ATS + ".5.3.3",
+                ATS + ".5.4.2",
+                ATS + ".5.4.3",
+                ATS + ".5.4.5",
+            ]
+        else:
+            oids += [oid for item in UPS_MEASUREMENTS for oid, _ in item.sources]
+            oids += ApcOid.binary_sensor_oids() + [
+                ApcOid.LAST_TRANSFER_CAUSE,
+                UPS + ".11.1.1.0",
+            ]
+            roots = [UPS + ".12.1.2", UPS + ".9.2", UPS + ".9.3"]
+        data = await self.async_get_multiple(list(dict.fromkeys(oids)))
+        for root in roots:
+            data.update(await self.async_walk(root))
+        return data
 
-    def close(self) -> None:
-        """Close the SNMP engine."""
-        # pysnmp doesn't require explicit cleanup
-        pass
+    def close(self):
+        """Requests own and close their dispatchers."""

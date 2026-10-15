@@ -2,8 +2,8 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect to APC UPS",
-        "description": "Enter the connection details for your APC UPS with Network Management Card.",
+        "title": "Connect to APC UPS or ATS",
+        "description": "Enter the Network Management Card connection details. The device type and supported sensors are detected automatically.",
         "data": {
           "host": "Host",
           "port": "Port",
@@ -11,8 +11,8 @@
         }
       },
       "auth_v2c": {
-        "title": "SNMP v2c Authentication",
-        "description": "Enter the community string for SNMP v2c authentication.",
+        "title": "SNMP v1 / v2c authentication",
+        "description": "SNMP v1 and v2c send the community string in cleartext. Use a read-only community on a trusted network, or SNMP v3 with authentication and encryption.",
         "data": {
           "community": "Community String"
         }
@@ -28,32 +28,440 @@
           "priv_password": "Privacy Password"
         }
       },
-      "sensors": {
-        "title": "Select Sensors",
-        "description": "Select which sensors to enable for {model} (Serial: {serial}).",
-        "data": {
-          "sensors": "Sensors"
-        }
+      "reauth_confirm": {
+        "title": "Update SNMP credentials",
+        "description": "Authentication failed. Continue to enter new credentials."
       }
     },
     "error": {
-      "cannot_connect": "Unable to connect to the UPS. Check the host and port.",
+      "cannot_connect": "Unable to find a supported APC UPS or ATS. Check the address, SNMP settings, and NMC access control.",
       "invalid_auth": "Authentication failed. Check your credentials.",
-      "timeout": "Connection timed out. The UPS may be unreachable.",
+      "invalid_host": "Invalid host. Enter a valid IP address or hostname.",
+      "timeout": "SNMP request timed out. Check connectivity and the NMC access-control list.",
       "unknown": "An unexpected error occurred."
     },
     "abort": {
-      "already_configured": "This UPS is already configured."
+      "already_configured": "This device is already configured.",
+      "device_mismatch": "The connected device does not match this entry.",
+      "reauth_successful": "Credentials updated.",
+      "reconfigure_successful": "Connection updated."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "APC UPS Options",
-        "description": "Configure which sensors to enable.",
+        "description": "Configure the polling interval. Enable or disable individual sensors in the entity settings.",
         "data": {
-          "sensors": "Sensors"
+          "scan_interval": "Polling Interval"
         }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "ups_status": {
+        "name": "UPS status"
+      },
+      "battery_capacity": {
+        "name": "Battery capacity"
+      },
+      "battery_runtime": {
+        "name": "Battery runtime"
+      },
+      "battery_temperature": {
+        "name": "Battery temperature"
+      },
+      "battery_voltage": {
+        "name": "Battery voltage"
+      },
+      "battery_current": {
+        "name": "Battery current"
+      },
+      "battery_current_total": {
+        "name": "Battery current total"
+      },
+      "battery_nominal_voltage": {
+        "name": "Battery nominal voltage"
+      },
+      "battery_packs": {
+        "name": "Battery packs"
+      },
+      "battery_bad_packs": {
+        "name": "Battery bad packs"
+      },
+      "battery_last_replaced": {
+        "name": "Battery last replaced"
+      },
+      "battery_replace_date": {
+        "name": "Battery replace date"
+      },
+      "time_on_battery": {
+        "name": "Time on battery"
+      },
+      "ups_temperature": {
+        "name": "Ups temperature"
+      },
+      "input_voltage": {
+        "name": "Input voltage"
+      },
+      "input_max_voltage": {
+        "name": "Input max voltage"
+      },
+      "input_min_voltage": {
+        "name": "Input min voltage"
+      },
+      "input_frequency": {
+        "name": "Input frequency"
+      },
+      "input_transfer_high": {
+        "name": "Input transfer high"
+      },
+      "input_transfer_low": {
+        "name": "Input transfer low"
+      },
+      "input_sensitivity": {
+        "name": "Input sensitivity",
+        "state": {
+          "auto": "Auto",
+          "low": "Low",
+          "medium": "Medium",
+          "high": "High"
+        }
+      },
+      "output_voltage": {
+        "name": "Output voltage"
+      },
+      "output_frequency": {
+        "name": "Output frequency"
+      },
+      "output_current": {
+        "name": "Output current"
+      },
+      "output_load": {
+        "name": "Output load"
+      },
+      "output_power": {
+        "name": "Output power"
+      },
+      "apparent_power": {
+        "name": "Apparent power"
+      },
+      "output_efficiency": {
+        "name": "Output efficiency"
+      },
+      "output_energy": {
+        "name": "Output energy"
+      },
+      "output_nominal_voltage": {
+        "name": "Output nominal voltage"
+      },
+      "nominal_power": {
+        "name": "Nominal power"
+      },
+      "nominal_apparent_power": {
+        "name": "Nominal apparent power"
+      },
+      "self_test_result": {
+        "name": "Self test result",
+        "state": {
+          "ok": "Ok",
+          "failed": "Failed",
+          "invalid": "Invalid",
+          "in_progress": "In progress"
+        }
+      },
+      "self_test_date": {
+        "name": "Self test date"
+      },
+      "calibration_result": {
+        "name": "Calibration result",
+        "state": {
+          "ok": "Ok",
+          "insufficient_capacity": "Insufficient capacity",
+          "in_progress": "In progress",
+          "refused": "Refused",
+          "cancelled": "Cancelled",
+          "pending": "Pending"
+        }
+      },
+      "calibration_date": {
+        "name": "Calibration date"
+      },
+      "battery_restart_capacity": {
+        "name": "Battery restart capacity"
+      },
+      "battery_runtime_low": {
+        "name": "Battery runtime low"
+      },
+      "shutdown_delay": {
+        "name": "Shutdown delay"
+      },
+      "startup_delay": {
+        "name": "Startup delay"
+      },
+      "input_line_bads": {
+        "name": "Input line bads"
+      },
+      "input_phases": {
+        "name": "Input phases"
+      },
+      "output_phases": {
+        "name": "Output phases"
+      },
+      "ambient_temperature": {
+        "name": "Ambient temperature"
+      },
+      "ambient_humidity": {
+        "name": "Ambient humidity"
+      },
+      "output_nominal_frequency": {
+        "name": "Output nominal frequency"
+      },
+      "ambient_temperature_high": {
+        "name": "Ambient temperature high"
+      },
+      "ambient_temperature_low": {
+        "name": "Ambient temperature low"
+      },
+      "ambient_humidity_high": {
+        "name": "Ambient humidity high"
+      },
+      "ambient_humidity_low": {
+        "name": "Ambient humidity low"
+      },
+      "manufacture_date": {
+        "name": "Manufacture date"
+      },
+      "input_phase_frequency_indexed": {
+        "name": "{label}"
+      },
+      "output_phase_frequency_indexed": {
+        "name": "{label}"
+      },
+      "input_phase_voltage_indexed": {
+        "name": "{label}"
+      },
+      "input_phase_max_voltage_indexed": {
+        "name": "{label}"
+      },
+      "input_phase_min_voltage_indexed": {
+        "name": "{label}"
+      },
+      "input_phase_current_indexed": {
+        "name": "{label}"
+      },
+      "output_phase_voltage_indexed": {
+        "name": "{label}"
+      },
+      "output_phase_current_indexed": {
+        "name": "{label}"
+      },
+      "output_phase_power_indexed": {
+        "name": "{label}"
+      },
+      "output_phase_max_power_indexed": {
+        "name": "{label}"
+      },
+      "output_phase_min_power_indexed": {
+        "name": "{label}"
+      },
+      "output_phase_real_power_indexed": {
+        "name": "{label}"
+      },
+      "output_phase_real_load_indexed": {
+        "name": "{label}"
+      },
+      "output_phase_load_indexed": {
+        "name": "{label}"
+      },
+      "output_phase_max_load_indexed": {
+        "name": "{label}"
+      },
+      "output_phase_min_load_indexed": {
+        "name": "{label}"
+      },
+      "last_transfer_cause": {
+        "name": "Last transfer cause",
+        "state": {
+          "No Transfer": "No transfer",
+          "High Line Voltage": "High line voltage",
+          "Brownout": "Brownout",
+          "Blackout": "Blackout",
+          "Small Momentary Sag": "Small momentary sag",
+          "Deep Momentary Sag": "Deep momentary sag",
+          "Small Momentary Spike": "Small momentary spike",
+          "Large Momentary Spike": "Large momentary spike",
+          "Self Test": "Self test",
+          "Rate of Voltage Change": "Rate of voltage change"
+        }
+      },
+      "outlet_group_indexed": {
+        "name": "{label}",
+        "state": {
+          "on": "On",
+          "off": "Off",
+          "unknown": "Unknown"
+        }
+      },
+      "input_nominal_voltage": {
+        "name": "Input nominal voltage"
+      },
+      "input_nominal_frequency": {
+        "name": "Input nominal frequency"
+      },
+      "front_panel": {
+        "name": "Front panel",
+        "state": {
+          "locked": "Locked",
+          "unlocked": "Unlocked"
+        }
+      },
+      "phase_sync": {
+        "name": "Phase sync",
+        "state": {
+          "in_sync": "In sync",
+          "out_of_sync": "Out of sync"
+        }
+      },
+      "selected_source": {
+        "name": "Selected source",
+        "state": {}
+      },
+      "preferred_source": {
+        "name": "Preferred source",
+        "state": {
+          "none": "None"
+        }
+      },
+      "input_status_indexed": {
+        "name": "{label}",
+        "state": {
+          "fail": "Fail",
+          "ok": "Ok"
+        }
+      },
+      "input_frequency_indexed": {
+        "name": "{label}"
+      },
+      "input_orientation_indexed": {
+        "name": "{label}",
+        "state": {
+          "unknown": "Unknown",
+          "single_phase": "Single phase",
+          "split_phase": "Split phase",
+          "three_phase_neutral": "Three phase neutral",
+          "three_phase": "Three phase"
+        }
+      },
+      "input_type_indexed": {
+        "name": "{label}",
+        "state": {
+          "unknown": "Unknown",
+          "main": "Main",
+          "bypass": "Bypass"
+        }
+      },
+      "input_max_voltage_indexed": {
+        "name": "{label}"
+      },
+      "input_min_voltage_indexed": {
+        "name": "{label}"
+      },
+      "input_current_indexed": {
+        "name": "{label}"
+      },
+      "input_power_indexed": {
+        "name": "{label}"
+      },
+      "input_voltage_indexed": {
+        "name": "{label}"
+      },
+      "output_frequency_indexed": {
+        "name": "{label}"
+      },
+      "output_voltage_indexed": {
+        "name": "{label}"
+      },
+      "output_current_indexed": {
+        "name": "{label}"
+      },
+      "output_power_indexed": {
+        "name": "{label}"
+      },
+      "output_load_indexed": {
+        "name": "{label}"
+      }
+    },
+    "binary_sensor": {
+      "on_battery": {
+        "name": "On battery"
+      },
+      "replace_battery": {
+        "name": "Replace battery"
+      },
+      "low_battery": {
+        "name": "Low battery"
+      },
+      "overload": {
+        "name": "Overload"
+      },
+      "on_bypass": {
+        "name": "On bypass"
+      },
+      "calibrating": {
+        "name": "Calibrating"
+      },
+      "redundancy_lost": {
+        "name": "Redundancy lost"
+      },
+      "overcurrent": {
+        "name": "Overcurrent"
+      },
+      "power_supply_5v": {
+        "name": "Power supply 5v"
+      },
+      "power_supply_24v": {
+        "name": "Power supply 24v"
+      },
+      "power_supply_source_b": {
+        "name": "Power supply source b"
+      },
+      "power_supply_plus_12v": {
+        "name": "Power supply plus 12v"
+      },
+      "power_supply_minus_12v": {
+        "name": "Power supply minus 12v"
+      },
+      "switch_fault": {
+        "name": "Switch fault"
+      },
+      "source_a_fault": {
+        "name": "Source a fault"
+      },
+      "source_b_fault": {
+        "name": "Source b fault"
+      },
+      "output_fault": {
+        "name": "Output fault"
+      },
+      "hardware_fault": {
+        "name": "Hardware fault"
+      },
+      "comms_fault": {
+        "name": "Comms fault"
+      },
+      "power_supply_3v3": {
+        "name": "Power supply 3v3"
+      },
+      "power_supply_1v0": {
+        "name": "Power supply 1v0"
+      },
+      "boost_source_a": {
+        "name": "Boost source a"
+      },
+      "boost_source_b": {
+        "name": "Boost source b"
       }
     }
   }

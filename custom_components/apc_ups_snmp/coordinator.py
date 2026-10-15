@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 import logging
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.const import CONF_HOST, CONF_PORT, CONF_USERNAME
@@ -58,14 +58,15 @@ class ApcUpsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._config_data = config_data
         self._client = self._create_client()
+        self._client.device_type = config_data.get("device_type", "ups")
 
     def _create_client(self) -> ApcSnmpClient:
         """Create an SNMP client from config data."""
-        if self._config_data.get(CONF_SNMP_VERSION) == SNMP_VERSION_2C:
+        if self._config_data.get(CONF_SNMP_VERSION) in ("v1", SNMP_VERSION_2C):
             return ApcSnmpClient(
                 host=self._config_data[CONF_HOST],
                 port=self._config_data[CONF_PORT],
-                version=SNMP_VERSION_2C,
+                version=self._config_data.get(CONF_SNMP_VERSION, SNMP_VERSION_2C),
                 community=self._config_data.get(CONF_COMMUNITY),
             )
         else:

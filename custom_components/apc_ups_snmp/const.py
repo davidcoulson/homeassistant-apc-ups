@@ -10,6 +10,7 @@ MAX_SCAN_INTERVAL: Final = 300  # seconds (5 minutes)
 DEFAULT_TIMEOUT: Final = 5  # seconds
 
 # SNMP versions
+SNMP_VERSION_1: Final = "v1"
 SNMP_VERSION_2C: Final = "v2c"
 SNMP_VERSION_3: Final = "v3"
 
@@ -62,8 +63,8 @@ class ApcOid:
     MODEL: Final = ".1.3.6.1.4.1.318.1.1.1.1.1.1.0"
     NAME: Final = ".1.3.6.1.4.1.318.1.1.1.1.1.2.0"
     FIRMWARE: Final = ".1.3.6.1.4.1.318.1.1.1.1.2.1.0"
-    SERIAL: Final = ".1.3.6.1.4.1.318.1.1.1.1.2.2.0"
-    MANUFACTURE_DATE: Final = ".1.3.6.1.4.1.318.1.1.1.1.2.3.0"
+    SERIAL: Final = ".1.3.6.1.4.1.318.1.1.1.1.2.3.0"
+    MANUFACTURE_DATE: Final = ".1.3.6.1.4.1.318.1.1.1.1.2.2.0"
 
     # Battery OIDs
     BATTERY_STATUS: Final = ".1.3.6.1.4.1.318.1.1.1.2.1.1.0"

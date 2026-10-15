@@ -1,10 +1,6 @@
-"""Sensor platform for APC UPS SNMP integration."""
+"""Automatically discovered UPS and ATS measurements."""
 
-from __future__ import annotations
-
-from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any
+import re
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -12,386 +8,71 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (
-    PERCENTAGE,
-    UnitOfElectricCurrent,
-    UnitOfElectricPotential,
-    UnitOfEnergy,
-    UnitOfFrequency,
-    UnitOfPower,
-    UnitOfTemperature,
-    UnitOfTime,
-)
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity import EntityCategory
 
-from .const import (
-    CONF_SENSORS,
-    DOMAIN,
-    LAST_TRANSFER_CAUSE_MAP,
-    OUTPUT_STATUS_MAP,
-    ApcOid,
-)
-from .coordinator import ApcUpsCoordinator
+from .catalog import measurements, status
+from .const import DOMAIN
 from .entity import ApcUpsEntity
 
 
-# Default power factor for estimating power when OUTPUT_POWER OID unavailable.
-# Typical range is 0.7-0.95 depending on load type. Using 0.85 as a balanced default.
-DEFAULT_POWER_FACTOR = 0.85
-
-
-@dataclass(frozen=True)
-class ApcUpsSensorEntityDescription(SensorEntityDescription):
-    """Describes an APC UPS sensor entity."""
-
-    oid: str | None = None
-    value_fn: Callable[[int | float | None], float | str | None] | None = None
-    fallback_fn: Callable[[dict[str, Any]], float | None] | None = None
-
-
-def runtime_timeticks_to_minutes(value: int | None) -> float | None:
-    """Convert SNMP timeticks to minutes.
-
-    APC reports runtime in hundredths of a second (timeticks).
-    """
-    if value is None:
-        return None
-    # Timeticks are 1/100 of a second
-    seconds = value / 100
-    return round(seconds / 60, 1)
-
-
-def timeticks_to_seconds(value: int | None) -> float | None:
-    """Convert SNMP timeticks to seconds.
-
-    APC reports time on battery in hundredths of a second (timeticks).
-    """
-    if value is None:
-        return None
-    # Timeticks are 1/100 of a second
-    return round(value / 100, 1)
-
-
-def output_status_to_string(value: int | None) -> str | None:
-    """Convert output status code to string."""
-    if value is None:
-        return None
-    return OUTPUT_STATUS_MAP.get(value, "unknown")
-
-
-def last_transfer_cause_to_string(value: int | None) -> str | None:
-    """Convert last transfer cause code to string."""
-    if value is None:
-        return None
-    return LAST_TRANSFER_CAUSE_MAP.get(value, "Unknown")
-
-
-def to_one_decimal(value: int | float | None) -> float | None:
-    """Round value to 1 decimal place.
-
-    Always returns a float to ensure decimal display (e.g., 100.0 not 100).
-    """
-    if value is None:
-        return None
-    # Ensure we always return a float, not int
-    result = round(float(value), 1)
-    # Force float type even for whole numbers
-    return float(result)
-
-
-def tenths_to_amps(value: int | float | None) -> float | None:
-    """Convert tenths of amperes to amperes with 1 decimal place.
-
-    The high-precision OID returns current in tenths of amperes (e.g., 14 = 1.4A).
-    """
-    if value is None:
-        return None
-    return round(float(value) / 10.0, 1)
-
-
-def tenths_to_value(value: int | float | None) -> float | None:
-    """Convert tenths to actual value with 1 decimal place.
-
-    High-precision OIDs return values in tenths (e.g., 2203 = 220.3V).
-    """
-    if value is None:
-        return None
-    return round(float(value) / 10.0, 1)
-
-
-def calculate_output_power(data: dict[str, Any]) -> float | None:
-    """Calculate output power from voltage and current when OUTPUT_POWER OID unavailable.
-
-    Uses: Power (W) = Voltage (V) × Current (A) × Power Factor
-
-    The high-precision OIDs return values in tenths, so we divide by 10.
-    Power factor of 0.9 is typical for computer/server loads on APC UPS units.
-    """
-    voltage_raw = data.get(ApcOid.OUTPUT_VOLTAGE_HIGH_PREC)
-    current_raw = data.get(ApcOid.OUTPUT_CURRENT_HIGH_PREC)
-
-    if voltage_raw is None or current_raw is None:
-        return None
-
-    # Convert from tenths to actual values
-    voltage = float(voltage_raw) / 10.0
-    current = float(current_raw) / 10.0
-
-    # Calculate real power using power factor
-    power = voltage * current * DEFAULT_POWER_FACTOR
-
-    return round(power, 1)
-
-
-SENSOR_DESCRIPTIONS: dict[str, ApcUpsSensorEntityDescription] = {
-    "battery_capacity": ApcUpsSensorEntityDescription(
-        key="battery_capacity",
-        translation_key="battery_capacity",
-        name="Battery Capacity",
-        native_unit_of_measurement=PERCENTAGE,
-        device_class=SensorDeviceClass.BATTERY,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        oid=ApcOid.BATTERY_CAPACITY,
-        value_fn=to_one_decimal,
-    ),
-    "battery_runtime": ApcUpsSensorEntityDescription(
-        key="battery_runtime",
-        translation_key="battery_runtime",
-        name="Battery Runtime",
-        native_unit_of_measurement=UnitOfTime.MINUTES,
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        oid=ApcOid.BATTERY_RUNTIME,
-        value_fn=runtime_timeticks_to_minutes,
-    ),
-    "battery_temperature": ApcUpsSensorEntityDescription(
-        key="battery_temperature",
-        translation_key="battery_temperature",
-        name="Battery Temperature",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        oid=ApcOid.BATTERY_TEMPERATURE,
-        value_fn=to_one_decimal,
-    ),
-    "battery_voltage": ApcUpsSensorEntityDescription(
-        key="battery_voltage",
-        translation_key="battery_voltage",
-        name="Battery Voltage",
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        oid=ApcOid.BATTERY_VOLTAGE,
-        value_fn=to_one_decimal,
-    ),
-    "time_on_battery": ApcUpsSensorEntityDescription(
-        key="time_on_battery",
-        translation_key="time_on_battery",
-        name="Time On Battery",
-        native_unit_of_measurement=UnitOfTime.SECONDS,
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        oid=ApcOid.TIME_ON_BATTERY,
-        value_fn=timeticks_to_seconds,
-    ),
-    "input_voltage": ApcUpsSensorEntityDescription(
-        key="input_voltage",
-        translation_key="input_voltage",
-        name="Input Voltage",
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        oid=ApcOid.INPUT_VOLTAGE,
-        value_fn=to_one_decimal,
-    ),
-    "input_frequency": ApcUpsSensorEntityDescription(
-        key="input_frequency",
-        translation_key="input_frequency",
-        name="Input Frequency",
-        native_unit_of_measurement=UnitOfFrequency.HERTZ,
-        device_class=SensorDeviceClass.FREQUENCY,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        oid=ApcOid.INPUT_FREQUENCY,
-        value_fn=to_one_decimal,
-    ),
-    "last_transfer_cause": ApcUpsSensorEntityDescription(
-        key="last_transfer_cause",
-        translation_key="last_transfer_cause",
-        name="Last Transfer Cause",
-        device_class=SensorDeviceClass.ENUM,
-        oid=ApcOid.LAST_TRANSFER_CAUSE,
-        value_fn=last_transfer_cause_to_string,
-        options=list(LAST_TRANSFER_CAUSE_MAP.values()),
-    ),
-    "output_voltage": ApcUpsSensorEntityDescription(
-        key="output_voltage",
-        translation_key="output_voltage",
-        name="Output Voltage",
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        oid=ApcOid.OUTPUT_VOLTAGE_HIGH_PREC,
-        value_fn=tenths_to_value,
-    ),
-    "output_frequency": ApcUpsSensorEntityDescription(
-        key="output_frequency",
-        translation_key="output_frequency",
-        name="Output Frequency",
-        native_unit_of_measurement=UnitOfFrequency.HERTZ,
-        device_class=SensorDeviceClass.FREQUENCY,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        oid=ApcOid.OUTPUT_FREQUENCY_HIGH_PREC,
-        value_fn=tenths_to_value,
-    ),
-    "output_load": ApcUpsSensorEntityDescription(
-        key="output_load",
-        translation_key="output_load",
-        name="Output Load",
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        oid=ApcOid.OUTPUT_LOAD_HIGH_PREC,
-        value_fn=tenths_to_value,
-    ),
-    "output_current": ApcUpsSensorEntityDescription(
-        key="output_current",
-        translation_key="output_current",
-        name="Output Current",
-        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        device_class=SensorDeviceClass.CURRENT,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        oid=ApcOid.OUTPUT_CURRENT_HIGH_PREC,
-        value_fn=tenths_to_amps,
-    ),
-    "output_power": ApcUpsSensorEntityDescription(
-        key="output_power",
-        translation_key="output_power",
-        name="Output Power",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        oid=ApcOid.OUTPUT_POWER,
-        value_fn=to_one_decimal,
-        fallback_fn=calculate_output_power,
-    ),
-    "output_efficiency": ApcUpsSensorEntityDescription(
-        key="output_efficiency",
-        translation_key="output_efficiency",
-        name="Output Efficiency",
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        oid=ApcOid.OUTPUT_EFFICIENCY_HIGH_PREC,
-        value_fn=tenths_to_value,
-    ),
-    "output_energy": ApcUpsSensorEntityDescription(
-        key="output_energy",
-        translation_key="output_energy",
-        name="Output Energy",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        suggested_display_precision=1,
-        oid=ApcOid.OUTPUT_ENERGY_HIGH_PREC,
-        value_fn=tenths_to_value,
-    ),
-    "ups_status": ApcUpsSensorEntityDescription(
-        key="ups_status",
-        translation_key="ups_status",
-        name="UPS Status",
-        device_class=SensorDeviceClass.ENUM,
-        oid=ApcOid.OUTPUT_STATUS,
-        value_fn=output_status_to_string,
-        options=list(OUTPUT_STATUS_MAP.values()),
-    ),
-}
-
-
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up APC UPS SNMP sensors."""
-    coordinator: ApcUpsCoordinator = hass.data[DOMAIN][entry.entry_id]
-
-    # Get selected sensors from config
-    selected_sensors = entry.data.get(CONF_SENSORS, [])
-    if not selected_sensors:
-        # Default sensors if none selected
-        selected_sensors = list(SENSOR_DESCRIPTIONS.keys())
-
-    # Apply options if they override data
-    if entry.options.get(CONF_SENSORS):
-        selected_sensors = entry.options[CONF_SENSORS]
-
-    entities = []
-    for sensor_key in selected_sensors:
-        if sensor_key in SENSOR_DESCRIPTIONS:
-            entities.append(
-                ApcUpsSensor(
-                    coordinator=coordinator,
-                    entry_id=entry.entry_id,
-                    description=SENSOR_DESCRIPTIONS[sensor_key],
-                )
-            )
-
+async def async_setup_entry(hass, entry, async_add_entities):
+    """Create all supported measurements, including indexed rows."""
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    kind = entry.data.get("device_type", "ups")
+    entities = [
+        ApcUpsSensor(coordinator, entry.entry_id, item)
+        for item in measurements(kind, coordinator.data)
+        if item.value(coordinator.data) is not None
+    ]
+    if kind == "ups" and status(coordinator.data) is not None:
+        entities.append(ApcUpsSensor(coordinator, entry.entry_id, None))
     async_add_entities(entities)
 
 
 class ApcUpsSensor(ApcUpsEntity, SensorEntity):
-    """Representation of an APC UPS sensor."""
+    """A measurement with per-OID scaling and precision fallback."""
 
-    entity_description: ApcUpsSensorEntityDescription
-
-    def __init__(
-        self,
-        coordinator: ApcUpsCoordinator,
-        entry_id: str,
-        description: ApcUpsSensorEntityDescription,
-    ) -> None:
-        """Initialize the sensor.
-
-        Args:
-            coordinator: The data coordinator.
-            entry_id: The config entry ID.
-            description: The entity description.
-        """
+    def __init__(self, coordinator, entry_id, measurement):
         super().__init__(coordinator, entry_id)
-        self.entity_description = description
-        self._attr_unique_id = f"{entry_id}_{description.key}"
+        self.measurement = measurement
+        key = measurement.key if measurement else "ups_status"
+        self._attr_unique_id = f"{entry_id}_{key}"
+        enum = measurement.enum if measurement else None
+        translation_key = re.sub(r"_\d+(?:_\d+)*$", "_indexed", key)
+        if translation_key != key:
+            self._attr_translation_placeholders = {
+                "label": (measurement.name or key.replace("_", " ").capitalize())
+            }
+        self.entity_description = SensorEntityDescription(
+            key=key,
+            translation_key=translation_key,
+            name=(measurement.name if measurement else None)
+            or key.replace("_", " ").capitalize(),
+            native_unit_of_measurement=measurement.unit if measurement else None,
+            device_class=SensorDeviceClass.ENUM
+            if enum
+            else (measurement.device_class if measurement else None),
+            options=list(dict.fromkeys(enum.values())) if enum else None,
+            state_class=(
+                SensorStateClass.TOTAL_INCREASING
+                if key == "output_energy"
+                else SensorStateClass.MEASUREMENT
+            )
+            if measurement and measurement.unit
+            else None,
+            entity_category=EntityCategory.DIAGNOSTIC
+            if measurement and measurement.diagnostic
+            else None,
+            entity_registry_enabled_default=not (
+                measurement and measurement.diagnostic
+            ),
+        )
 
     @property
-    def native_value(self) -> Any:
-        """Return the state of the sensor."""
-        if self.coordinator.data is None:
-            return None
+    def native_value(self):
+        data = self.coordinator.data or {}
+        return self.measurement.value(data) if self.measurement else status(data)
 
-        oid = self.entity_description.oid
-        if oid is None:
-            return None
-
-        value = self.coordinator.data.get(oid)
-
-        # Apply value transformation if defined
-        if self.entity_description.value_fn is not None:
-            value = self.entity_description.value_fn(value)
-
-        # If value is still None and we have a fallback function, use it
-        if value is None and self.entity_description.fallback_fn is not None:
-            value = self.entity_description.fallback_fn(self.coordinator.data)
-
-        return value
+    @property
+    def available(self):
+        return super().available and self.native_value is not None

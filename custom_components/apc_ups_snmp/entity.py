@@ -5,7 +5,8 @@ from __future__ import annotations
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ApcOid, DOMAIN
+from .catalog import IDENTITY
+from .const import DOMAIN
 from .coordinator import ApcUpsCoordinator
 
 
@@ -32,11 +33,13 @@ class ApcUpsEntity(CoordinatorEntity[ApcUpsCoordinator]):
     def device_info(self) -> DeviceInfo:
         """Return device information."""
         data = self.coordinator.data or {}
+        identity = IDENTITY[self.coordinator._config_data.get("device_type", "ups")]
         return DeviceInfo(
             identifiers={(DOMAIN, self._entry_id)},
-            name=data.get(ApcOid.NAME, "APC UPS"),
+            name=data.get(identity["name"], "APC UPS"),
             manufacturer="APC by Schneider Electric",
-            model=data.get(ApcOid.MODEL, "Unknown"),
-            sw_version=data.get(ApcOid.FIRMWARE),
-            serial_number=data.get(ApcOid.SERIAL),
+            model=data.get(identity["model"], "Unknown"),
+            sw_version=data.get(identity["firmware"]),
+            configuration_url="http://" + self.coordinator._config_data["host"],
+            serial_number=data.get(identity["serial"]),
         )

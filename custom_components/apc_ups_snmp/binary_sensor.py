@@ -13,8 +13,10 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .catalog import ATS, ATS_PROBLEMS, status
 from .const import (
     BATTERY_REPLACE_YES,
     BATTERY_STATUS_LOW,
@@ -55,7 +57,7 @@ def is_low_battery(data: dict[str, Any]) -> bool | None:
     status = data.get(ApcOid.BATTERY_STATUS)
     if status is None:
         return None
-    return status == BATTERY_STATUS_LOW
+    return status in (BATTERY_STATUS_LOW, 4, 5)
 
 
 BINARY_SENSOR_DESCRIPTIONS: list[ApcUpsBinarySensorEntityDescription] = [
@@ -91,13 +93,35 @@ async def async_setup_entry(
     """Set up APC UPS SNMP binary sensors."""
     coordinator: ApcUpsCoordinator = hass.data[DOMAIN][entry.entry_id]
 
+    descriptions = (
+        BINARY_SENSOR_DESCRIPTIONS
+        if entry.data.get("device_type", "ups") == "ups"
+        else [
+            ApcUpsBinarySensorEntityDescription(
+                key=key,
+                translation_key=key,
+                entity_category=EntityCategory.DIAGNOSTIC
+                if key not in ("redundancy_lost", "overcurrent")
+                else None,
+                entity_registry_enabled_default=key
+                in ("redundancy_lost", "overcurrent"),
+                name=key.replace("_", " ").capitalize(),
+                device_class=BinarySensorDeviceClass.PROBLEM,
+                is_on_fn=lambda data, oid=ATS + f".5.1.{column}.0": (
+                    None if data.get(oid) is None else (data[oid] != 2)
+                ),
+            )
+            for key, column in ATS_PROBLEMS.items()
+        ]
+    )
     entities = [
         ApcUpsBinarySensor(
             coordinator=coordinator,
             entry_id=entry.entry_id,
             description=description,
         )
-        for description in BINARY_SENSOR_DESCRIPTIONS
+        for description in descriptions
+        if description.is_on_fn(coordinator.data) is not None
     ]
 
     async_add_entities(entities)
@@ -126,6 +150,10 @@ class ApcUpsBinarySensor(ApcUpsEntity, BinarySensorEntity):
         self._attr_unique_id = f"{entry_id}_{description.key}"
 
     @property
+    def available(self):
+        return super().available and self.is_on is not None
+
+    @property
     def is_on(self) -> bool | None:
         """Return true if the binary sensor is on."""
         if self.coordinator.data is None:
@@ -135,3 +163,28 @@ class ApcUpsBinarySensor(ApcUpsEntity, BinarySensorEntity):
             return self.entity_description.is_on_fn(self.coordinator.data)
 
         return None
+
+
+# Derived flags share the same status semantics as the textual status sensor.
+for _key, _word in (
+    ("overload", "OVER"),
+    ("on_bypass", "BYPASS"),
+    ("calibrating", "CAL"),
+):
+    BINARY_SENSOR_DESCRIPTIONS.append(
+        ApcUpsBinarySensorEntityDescription(
+            key=_key,
+            translation_key=_key,
+            name=_key.replace("_", " ").capitalize(),
+            device_class=BinarySensorDeviceClass.PROBLEM,
+            is_on_fn=lambda data, word=_word: (
+                None
+                if status(data) is None
+                else (
+                    data.get(ApcOid.OUTPUT_STATUS) in (6, 9, 10, 16, 17)
+                    if word == "BYPASS"
+                    else word in status(data).split()
+                )
+            ),
+        )
+    )
