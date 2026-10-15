@@ -1,6 +1,6 @@
 # APC UPS and ATS SNMP for Home Assistant
 
-Monitor APC Smart-UPS units and APC rack automatic transfer switches directly through their Network Management Card. No NUT server is required. The integration polls locally with SNMP v1, v2c, or v3.
+Monitor APC Smart-UPS units and APC rack automatic transfer switches directly through their Network Management Card. No NUT server is required. The integration polls locally with SNMP v1, v2c, or v3. Each client reuses its SNMP engine and transport. Table discovery uses GETBULK for v2c/v3 and GETNEXT for v1 at setup, then hourly or when a known cell disappears. Normal polls read cached cells with GET requests of at most 20 bindings.
 
 This integration is **read-only**. It does not send SNMP SET requests and provides no buttons, switches, outlet controls, shutdown commands, or calibration commands.
 
@@ -33,7 +33,7 @@ AP4452A discovery and scaling are tested against a sanitized NMC2 walk; UPS cove
 | Input | Voltage, maximum/minimum voltage, frequency, transfer high/low thresholds, sensitivity, last transfer reason, line-failure count, phase count |
 | Output | Voltage, frequency, current, load %, real power (W), apparent power (VA), efficiency, energy (kWh), nominal voltage/frequency, nominal VA and real-power ratings, phase count |
 | Phase tables | Per-phase input voltage/current and voltage extrema; output voltage/current, apparent and real power/load and their extrema |
-| Diagnostics | Internal temperature, manufacture date, self-test result/date, calibration result/date, startup/shutdown delays, ambient temperature/humidity when supported |
+| Diagnostics | Manufacture date, self-test result/date, calibration result/date, startup/shutdown delays, ambient temperature/humidity when supported |
 | Outlet groups | Named state sensor for each reported group |
 | Status | Combined NUT words: OL, OB, LB, RB, BYPASS, OFF, TRIM, BOOST, OVER, CAL, ECO |
 | Binary sensors | On battery, low battery, battery replacement needed, overload, on bypass, calibrating |
@@ -45,13 +45,13 @@ High-precision measurements take precedence over standard OIDs, with the appropr
 | Area | Measurements |
 | --- | --- |
 | Sources | Selected and preferred source using configured input names (fallback Source A/B), nominal input voltage/frequency, sensitivity |
-| Each input | Named voltage and frequency sensors, source health status, voltage orientation and input type; maximum/minimum voltage, current and apparent power where supported |
-| Output phases | Voltage, current (0.1 A scaling), apparent power (VA), load %, output frequency |
+| Each input | Named voltage and frequency sensors, source fault binary sensors, diagnostic voltage orientation and input type; maximum/minimum voltage, current and apparent power where supported |
+| Output phases | Voltage, current (0.1 A scaling), apparent power (VA), load %, diagnostic output frequency |
 | Output banks | Current, voltage, real power and load state, where the bank table is supported |
 | Status | Redundancy lost and overcurrent problem sensors; diagnostic communication, switch, source, output, hardware and power-supply fault sensors; front-panel lock and phase synchronization states |
 | Identity | APC manufacturer, model, serial, firmware, name, manufacture date sensor, link to the card's web interface |
 
-The AP4452A output phase power column reports **VA**, not watts. Unsupported output bank columns do not create entities. Input orientation and type are descriptive metadata; source status sensors report health.
+The AP4452A output phase power column reports **VA**, not watts. Unsupported output bank columns do not create entities. Input orientation and type are diagnostic metadata; named source fault binary sensors report health. Row names include phase or bank numbers only when multiple rows exist.
 
 ## Configure the card
 

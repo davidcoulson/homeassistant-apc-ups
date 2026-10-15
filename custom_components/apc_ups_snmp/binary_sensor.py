@@ -148,6 +148,14 @@ class ApcUpsBinarySensor(ApcUpsEntity, BinarySensorEntity):
         super().__init__(coordinator, entry_id)
         self.entity_description = description
         self._attr_unique_id = f"{entry_id}_{description.key}"
+        if description.key in ("source_a_fault", "source_b_fault"):
+            index = 1 if description.key == "source_a_fault" else 2
+            self._attr_translation_placeholders = {
+                "input": str(
+                    coordinator.data.get(ATS + f".5.3.2.1.6.{index}")
+                    or f"Source {'AB'[index - 1]}"
+                )
+            }
 
     @property
     def available(self):

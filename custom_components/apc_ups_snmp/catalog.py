@@ -1,6 +1,9 @@
 """Read-only PowerNet measurements. OID suffixes and scales are MIB facts."""
 
 from dataclasses import dataclass
+from typing import Any
+
+from .const import LAST_TRANSFER_CAUSE_MAP
 
 UPS = ".1.3.6.1.4.1.318.1.1.1"
 ATS = ".1.3.6.1.4.1.318.1.1.8"
@@ -27,25 +30,23 @@ class Measurement:
     """Ordered OID alternatives, each with its own scale."""
 
     key: str
-    sources: tuple
+    sources: tuple[tuple[str, float | None], ...]
     unit: str | None = None
     device_class: str | None = None
-    enum: dict | None = None
+    enum: dict[int, str] | None = None
     diagnostic: bool = False
     name: str | None = None
 
-    def value(self, data):
+    reject_negative: bool = False
+
+    def value(self, data: dict[str, Any]) -> float | str | None:
         """Read the first supported alternative."""
         for oid, scale in self.sources:
             raw = data.get(oid)
             if (
                 raw is None
                 or raw == -1
-                or (
-                    self.key == "output_efficiency"
-                    and isinstance(raw, (float, int))
-                    and raw < 0
-                )
+                or (self.reject_negative and isinstance(raw, (float, int)) and raw < 0)
             ):
                 continue
             if self.enum is not None:
@@ -57,22 +58,27 @@ class Measurement:
 
 
 def m(
-    key,
-    suffix,
-    unit=None,
-    dc=None,
-    scale=1,
-    fallback=None,
-    enum=None,
-    diag=False,
-    root=UPS,
-    name=None,
-):
+    key: str,
+    suffix: str,
+    unit: str | None = None,
+    dc: str | None = None,
+    scale: float | None = 1,
+    fallback: str | None = None,
+    enum: dict[int, str] | None = None,
+    diag: bool = False,
+    root: str = UPS,
+    name: str | None = None,
+    reject_negative: bool = False,
+    before: tuple[tuple[str, float | None], ...] = (),
+    after: tuple[tuple[str, float | None], ...] = (),
+) -> Measurement:
     """Build a scalar measurement."""
     sources = ((root + suffix, scale),)
     if fallback:
         sources += ((root + fallback, 1),)
-    return Measurement(key, sources, unit, dc, enum, diag, name)
+    return Measurement(
+        key, before + sources + after, unit, dc, enum, diag, name, reject_negative
+    )
 
 
 UPS_MEASUREMENTS = [
@@ -96,11 +102,18 @@ UPS_MEASUREMENTS = [
     m("battery_last_replaced", ".2.1.3.0", scale=None, diag=True),
     m("battery_replace_date", ".2.2.21.0", scale=None, diag=True),
     m("time_on_battery", ".2.1.2.0", "s", "duration", 0.01, diag=True),
-    m("ups_temperature", ".2.3.2.0", "°C", "temperature", 0.1, ".2.2.2.0"),
     m("input_voltage", ".3.3.1.0", "V", "voltage", 0.1, ".3.2.1.0"),
     m("input_max_voltage", ".3.3.2.0", "V", "voltage", 0.1, ".3.2.2.0", diag=True),
     m("input_min_voltage", ".3.3.3.0", "V", "voltage", 0.1, ".3.2.3.0", diag=True),
-    m("input_frequency", ".3.3.4.0", "Hz", "frequency", 0.1, ".3.2.4.0"),
+    m(
+        "input_frequency",
+        ".3.3.4.0",
+        "Hz",
+        "frequency",
+        0.1,
+        ".3.2.4.0",
+        before=((UPS + ".9.2.2.1.4.1", 0.1),),
+    ),
     m("input_transfer_high", ".5.2.2.0", "V", "voltage", diag=True),
     m("input_transfer_low", ".5.2.3.0", "V", "voltage", diag=True),
     m(
@@ -110,16 +123,31 @@ UPS_MEASUREMENTS = [
         diag=True,
     ),
     m("output_voltage", ".4.3.1.0", "V", "voltage", 0.1, ".4.2.1.0"),
-    m("output_frequency", ".4.3.2.0", "Hz", "frequency", 0.1, ".4.2.2.0"),
+    m(
+        "output_frequency",
+        ".4.3.2.0",
+        "Hz",
+        "frequency",
+        0.1,
+        ".4.2.2.0",
+        before=((UPS + ".9.3.2.1.4.1", 0.1),),
+    ),
     m("output_current", ".4.3.4.0", "A", "current", 0.1, ".4.2.4.0"),
     m("output_load", ".4.3.3.0", "%", scale=0.1, fallback=".4.2.3.0"),
     m("output_power", ".4.2.8.0", "W", "power"),
     m("apparent_power", ".4.2.9.0", "VA", "apparent_power", diag=True),
-    m("output_efficiency", ".4.3.5.0", "%", scale=0.1, diag=True),
+    m("output_efficiency", ".4.3.5.0", "%", scale=0.1, diag=True, reject_negative=True),
     m("output_energy", ".4.3.6.0", "kWh", "energy", 0.01),
     m("output_nominal_voltage", ".5.2.1.0", "V", "voltage", diag=True),
     m("nominal_power", ".1.3.6.1.2.1.33.1.9.6.0", "W", "power", diag=True, root=""),
-    m("nominal_apparent_power", ".1.2.9.0", "VA", "apparent_power", diag=True),
+    m(
+        "nominal_apparent_power",
+        ".1.2.9.0",
+        "VA",
+        "apparent_power",
+        diag=True,
+        after=((".1.3.6.1.2.1.33.1.9.5.0", 1), (UPS + ".4.2.6.0", 1000)),
+    ),
     m(
         "self_test_result",
         ".7.2.3.0",
@@ -141,28 +169,55 @@ UPS_MEASUREMENTS = [
         diag=True,
     ),
     m("calibration_date", ".7.2.7.0", scale=None, diag=True),
+    m("battery_restart_capacity", ".5.2.6.0", "%", diag=True),
+    m("battery_runtime_low", ".5.2.8.0", "s", "duration", 0.01, diag=True),
+    m("shutdown_delay", ".5.2.10.0", "s", "duration", 0.01, diag=True),
+    m("startup_delay", ".5.2.9.0", "s", "duration", 0.01, diag=True),
+    m("input_line_bads", ".3.1.1.0", diag=True),
+    m("input_phases", ".9.2.2.1.2.1", diag=True),
+    m("output_phases", ".9.3.2.1.2.1", diag=True),
+    m(
+        "ambient_temperature",
+        ".1.3.6.1.4.1.318.1.1.2.1.1.0",
+        "°C",
+        "temperature",
+        root="",
+    ),
+    m("ambient_humidity", ".1.3.6.1.4.1.318.1.1.2.1.2.0", "%", "humidity", root=""),
+    m("output_nominal_frequency", ".4.2.7.0", "Hz", "frequency", diag=True),
+    m(
+        "ambient_temperature_high",
+        ".1.3.6.1.4.1.318.1.1.10.1.2.2.1.3.1",
+        "°C",
+        "temperature",
+        root="",
+        diag=True,
+    ),
+    m(
+        "ambient_temperature_low",
+        ".1.3.6.1.4.1.318.1.1.10.1.2.2.1.4.1",
+        "°C",
+        "temperature",
+        root="",
+        diag=True,
+    ),
+    m(
+        "ambient_humidity_high",
+        ".1.3.6.1.4.1.318.1.1.10.1.2.2.1.6.1",
+        "%",
+        "humidity",
+        root="",
+        diag=True,
+    ),
+    m(
+        "ambient_humidity_low",
+        ".1.3.6.1.4.1.318.1.1.10.1.2.2.1.7.1",
+        "%",
+        "humidity",
+        root="",
+        diag=True,
+    ),
 ]
-
-# Read-only settings and environmental measurements also exposed by NUT.
-UPS_MEASUREMENTS.extend(
-    [
-        m("battery_restart_capacity", ".5.2.6.0", "%", diag=True),
-        m("battery_runtime_low", ".5.2.8.0", "s", "duration", 0.01, diag=True),
-        m("shutdown_delay", ".5.2.10.0", "s", "duration", 0.01, diag=True),
-        m("startup_delay", ".5.2.9.0", "s", "duration", 0.01, diag=True),
-        m("input_line_bads", ".3.1.1.0", diag=True),
-        m("input_phases", ".9.2.2.1.2.1", diag=True),
-        m("output_phases", ".9.3.2.1.2.1", diag=True),
-        m(
-            "ambient_temperature",
-            ".1.3.6.1.4.1.318.1.1.2.1.1.0",
-            "°C",
-            "temperature",
-            root="",
-        ),
-        m("ambient_humidity", ".1.3.6.1.4.1.318.1.1.2.1.2.0", "%", "humidity", root=""),
-    ]
-)
 
 # PowerNet phase-table column facts. All indexes are discovered from the table.
 UPS_PHASE_COLUMNS = [
@@ -234,12 +289,11 @@ def status(data):
 def measurements(device_type, data):
     """Discover supported table rows without relying on fixed row counts."""
     if device_type == "ups":
-        from .const import LAST_TRANSFER_CAUSE_MAP
-
         result = list(UPS_MEASUREMENTS)
         result.append(m("manufacture_date", ".1.2.2.0", scale=None, diag=True))
         for key, prefix, unit, dc, scale in UPS_PHASE_COLUMNS:
-            for oid in sorted(data):
+            rows = [oid for oid in sorted(data) if oid.startswith(UPS + prefix)]
+            for oid in rows:
                 if oid.startswith(UPS + prefix):
                     index = oid.removeprefix(UPS + prefix)
                     result.append(
@@ -249,6 +303,12 @@ def measurements(device_type, data):
                             unit,
                             dc,
                             diagnostic="max" in key or "min" in key,
+                            name=key.replace("_phase", "")
+                            .replace("_", " ")
+                            .capitalize()
+                            + (
+                                f" phase {rows.index(oid) + 1}" if len(rows) > 1 else ""
+                            ),
                         )
                     )
 
@@ -256,7 +316,10 @@ def measurements(device_type, data):
             m(
                 "last_transfer_cause",
                 ".3.2.5.0",
-                enum=LAST_TRANSFER_CAUSE_MAP,
+                enum={
+                    number: label.lower().replace(" ", "_")
+                    for number, label in LAST_TRANSFER_CAUSE_MAP.items()
+                },
                 diag=True,
             )
         )
@@ -330,16 +393,6 @@ def measurements(device_type, data):
                 root=ATS,
             )
         )
-    for i, label in names.items():
-        result.append(
-            m(
-                f"input_status_{i}",
-                f".5.1.{11 + i}.0",
-                enum={1: "fail", 2: "ok"},
-                root=ATS,
-                name=label + " status",
-            )
-        )
     tables = [
         (".5.3.2.1.4.", "input_frequency", "Hz", "frequency", 1, None),
         (
@@ -387,12 +440,19 @@ def measurements(device_type, data):
         (".5.4.5.1.15.", "bank_power", "W", "power", 1, None),
     ]
     for prefix, key, unit, dc, scale, enum in tables:
+        rows = [
+            oid.removeprefix(ATS + prefix)
+            for oid in sorted(data)
+            if oid.startswith(ATS + prefix)
+        ]
         for oid in sorted(data):
             if oid.startswith(ATS + prefix):
                 index = oid.removeprefix(ATS + prefix)
                 label = (
                     names.get(int(index.split(".")[0]), "Input")
                     if key.startswith("input")
+                    else "Bank"
+                    if key.startswith("bank")
                     else "Output"
                 )
                 result.append(
@@ -402,8 +462,31 @@ def measurements(device_type, data):
                         unit,
                         dc,
                         enum,
-                        False,
-                        f"{label} {key.split('_', 1)[1].replace('_', ' ')} {index}",
+                        key in ("input_orientation", "input_type", "output_frequency"),
+                        f"{label} {key.split('_', 1)[1].replace('_', ' ')}"
+                        + (
+                            " "
+                            + ("bank " if key.startswith("bank") else "phase ")
+                            + str(
+                                [
+                                    row
+                                    for row in rows
+                                    if not key.startswith("input")
+                                    or row.split(".")[0] == index.split(".")[0]
+                                ].index(index)
+                                + 1
+                            )
+                            if len(
+                                [
+                                    row
+                                    for row in rows
+                                    if not key.startswith("input")
+                                    or row.split(".")[0] == index.split(".")[0]
+                                ]
+                            )
+                            > 1
+                            else ""
+                        ),
                     )
                 )
     return result
@@ -424,76 +507,8 @@ ATS_PROBLEMS = {
     "output_fault": 15,
     "hardware_fault": 16,
     "comms_fault": 1,
+    "power_supply_3v3": 17,
+    "power_supply_1v0": 18,
+    "boost_source_a": 19,
+    "boost_source_b": 20,
 }
-
-ATS_PROBLEMS.update(
-    {
-        "power_supply_3v3": 17,
-        "power_supply_1v0": 18,
-        "boost_source_a": 19,
-        "boost_source_b": 20,
-    }
-)
-
-# The standard UPS-MIB ratings are available on some cards only.
-_rating = next(i for i in UPS_MEASUREMENTS if i.key == "nominal_apparent_power")
-UPS_MEASUREMENTS[UPS_MEASUREMENTS.index(_rating)] = Measurement(
-    _rating.key,
-    _rating.sources + ((".1.3.6.1.2.1.33.1.9.5.0", 1), (UPS + ".4.2.6.0", 1000)),
-    _rating.unit,
-    _rating.device_class,
-    diagnostic=True,
-)
-UPS_MEASUREMENTS.append(
-    m("output_nominal_frequency", ".4.2.7.0", "Hz", "frequency", diag=True)
-)
-
-# Phase-aware frequency readings take priority where available.
-for _key, _oid in (
-    ("input_frequency", ".9.2.2.1.4.1"),
-    ("output_frequency", ".9.3.2.1.4.1"),
-):
-    _item = next(item for item in UPS_MEASUREMENTS if item.key == _key)
-    UPS_MEASUREMENTS[UPS_MEASUREMENTS.index(_item)] = Measurement(
-        _item.key,
-        ((UPS + _oid, 0.1),) + _item.sources,
-        _item.unit,
-        _item.device_class,
-    )
-
-UPS_MEASUREMENTS.extend(
-    [
-        m(
-            "ambient_temperature_high",
-            ".1.3.6.1.4.1.318.1.1.10.1.2.2.1.3.1",
-            "°C",
-            "temperature",
-            root="",
-            diag=True,
-        ),
-        m(
-            "ambient_temperature_low",
-            ".1.3.6.1.4.1.318.1.1.10.1.2.2.1.4.1",
-            "°C",
-            "temperature",
-            root="",
-            diag=True,
-        ),
-        m(
-            "ambient_humidity_high",
-            ".1.3.6.1.4.1.318.1.1.10.1.2.2.1.6.1",
-            "%",
-            "humidity",
-            root="",
-            diag=True,
-        ),
-        m(
-            "ambient_humidity_low",
-            ".1.3.6.1.4.1.318.1.1.10.1.2.2.1.7.1",
-            "%",
-            "humidity",
-            root="",
-            diag=True,
-        ),
-    ]
-)

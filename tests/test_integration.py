@@ -105,6 +105,20 @@ async def test_setup(hass, fake_snmp, kind, fixture):
             == "VA"
         )
         assert entity("bank_power_1") is None
+        assert entity("input_status_1") is None
+        assert (
+            registry.async_get(entity("output_current_1_1_1")).original_name
+            == "Output current"
+        )
+        assert (
+            registry.async_get(entity("input_voltage_1_1_1")).original_name
+            == "Server UPS Blue voltage"
+        )
+        source_id = registry.async_get_entity_id(
+            "binary_sensor", DOMAIN, f"{entry.entry_id}_source_a_fault"
+        )
+        assert registry.async_get(source_id).original_name == "Server UPS Blue fault"
+        assert registry.async_get(source_id).disabled_by is not None
     assert max(len(oids) for oids, _ in fake_snmp.calls) <= 20
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
     assert diagnostics["config"]["community"] == "**REDACTED**"
@@ -250,7 +264,7 @@ def test_ats_enum_meanings():
     assert values["preferred_source"] == "none"
     assert values["input_orientation_1"] == "single_phase"
     assert values["input_type_1"] == "main"
-    assert values["input_status_1"] == "ok"
+    assert "input_status_1" not in values
 
 
 async def test_device_info_and_unavailability(hass, fake_snmp):
@@ -365,3 +379,57 @@ def test_phase_scaling_and_units():
     assert items["output_phase_power_1_1_1"].unit == "VA"
     assert items["output_phase_real_power_1_1_1"].unit == "W"
     assert items["input_frequency"].value(data) == 59.9
+
+
+def test_row_names_diagnostics_and_duplicates():
+    from unittest.mock import MagicMock
+
+    from custom_components.apc_ups_snmp.sensor import ApcUpsSensor
+
+    data = read_walk("ap4452a.walk")
+    items = {item.key: item for item in measurements("ats", data)}
+    assert items["input_voltage_1_1_1"].name == "Server UPS Blue voltage"
+    assert items["input_frequency_2"].name == "Server UPS Green frequency"
+    assert items["output_current_1_1_1"].name == "Output current"
+    for key in ("input_orientation_1", "input_type_1", "output_frequency_1"):
+        assert items[key].diagnostic
+    assert not any(key.startswith("input_status_") for key in items)
+    assert not any(item.key == "ups_temperature" for item in measurements("ups", {}))
+    assert not any(key.startswith("bank_") for key in items)
+    data[ATS + ".5.4.3.1.4.1.1.2"] = 25
+    multi = {item.key: item for item in measurements("ats", data)}
+    assert multi["output_current_1_1_1"].name == "Output current phase 1"
+    assert multi["output_current_1_1_2"].name == "Output current phase 2"
+    entity = ApcUpsSensor(MagicMock(), "entry", multi["output_current_1_1_2"])
+    assert entity.unique_id == "entry_output_current_1_1_2"
+    assert entity.translation_key == "output_current_indexed_phase"
+    assert entity.translation_placeholders == {"label": "Output", "index": "2"}
+
+
+def test_all_enum_translations():
+    import json
+    import re
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    from custom_components.apc_ups_snmp.sensor import ApcUpsSensor
+
+    strings = json.loads(
+        Path("custom_components/apc_ups_snmp/strings.json").read_text()
+    )
+    translations = strings["entity"]["sensor"]
+    data = read_walk("ap4452a.walk") | read_walk("smartups.walk")
+    data[ATS + ".5.4.5.1.5.1"] = 1
+    for kind in ("ats", "ups"):
+        for item in measurements(kind, data):
+            if not item.enum:
+                continue
+            entity = ApcUpsSensor(MagicMock(), "entry", item)
+            if item.key in ("selected_source", "preferred_source"):
+                assert entity.translation_key is None
+                assert item.value(data) in entity.options
+                continue
+            states = translations[entity.translation_key]["state"]
+            for option in entity.options:
+                assert re.fullmatch(r"[a-z][a-z0-9_]*", option)
+                assert option in states

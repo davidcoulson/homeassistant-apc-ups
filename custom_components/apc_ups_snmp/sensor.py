@@ -40,9 +40,28 @@ class ApcUpsSensor(ApcUpsEntity, SensorEntity):
         enum = measurement.enum if measurement else None
         translation_key = re.sub(r"_\d+(?:_\d+)*$", "_indexed", key)
         if translation_key != key:
-            self._attr_translation_placeholders = {
-                "label": (measurement.name or key.replace("_", " ").capitalize())
-            }
+            label = measurement.name or key.replace("_", " ").capitalize()
+            base = translation_key.removesuffix("_indexed")
+            if base != "outlet_group":
+                metric = (
+                    base.removeprefix("input_")
+                    .removeprefix("output_")
+                    .removeprefix("bank_")
+                    .removeprefix("phase_")
+                    .replace("_", " ")
+                )
+                row = re.search(r" (phase|bank) (\d+)$", label)
+                if row:
+                    label = label[: row.start()]
+                    translation_key += "_" + row[1]
+                label = label.removesuffix(" " + metric)
+                self._attr_translation_placeholders = {"label": label}
+                if row:
+                    self._attr_translation_placeholders["index"] = row[2]
+            else:
+                self._attr_translation_placeholders = {"label": label}
+        if key in ("selected_source", "preferred_source"):
+            translation_key = None
         self.entity_description = SensorEntityDescription(
             key=key,
             translation_key=translation_key,

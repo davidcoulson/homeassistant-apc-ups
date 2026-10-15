@@ -99,9 +99,6 @@
       "time_on_battery": {
         "name": "Time on battery"
       },
-      "ups_temperature": {
-        "name": "Ups temperature"
-      },
       "input_voltage": {
         "name": "Input voltage"
       },
@@ -234,66 +231,66 @@
         "name": "Manufacture date"
       },
       "input_phase_frequency_indexed": {
-        "name": "{label}"
+        "name": "{label} frequency"
       },
       "output_phase_frequency_indexed": {
-        "name": "{label}"
+        "name": "{label} frequency"
       },
       "input_phase_voltage_indexed": {
-        "name": "{label}"
+        "name": "{label} voltage"
       },
       "input_phase_max_voltage_indexed": {
-        "name": "{label}"
+        "name": "{label} max voltage"
       },
       "input_phase_min_voltage_indexed": {
-        "name": "{label}"
+        "name": "{label} min voltage"
       },
       "input_phase_current_indexed": {
-        "name": "{label}"
+        "name": "{label} current"
       },
       "output_phase_voltage_indexed": {
-        "name": "{label}"
+        "name": "{label} voltage"
       },
       "output_phase_current_indexed": {
-        "name": "{label}"
+        "name": "{label} current"
       },
       "output_phase_power_indexed": {
-        "name": "{label}"
+        "name": "{label} power"
       },
       "output_phase_max_power_indexed": {
-        "name": "{label}"
+        "name": "{label} max power"
       },
       "output_phase_min_power_indexed": {
-        "name": "{label}"
+        "name": "{label} min power"
       },
       "output_phase_real_power_indexed": {
-        "name": "{label}"
+        "name": "{label} real power"
       },
       "output_phase_real_load_indexed": {
-        "name": "{label}"
+        "name": "{label} real load"
       },
       "output_phase_load_indexed": {
-        "name": "{label}"
+        "name": "{label} load"
       },
       "output_phase_max_load_indexed": {
-        "name": "{label}"
+        "name": "{label} max load"
       },
       "output_phase_min_load_indexed": {
-        "name": "{label}"
+        "name": "{label} min load"
       },
       "last_transfer_cause": {
         "name": "Last transfer cause",
         "state": {
-          "No Transfer": "No transfer",
-          "High Line Voltage": "High line voltage",
-          "Brownout": "Brownout",
-          "Blackout": "Blackout",
-          "Small Momentary Sag": "Small momentary sag",
-          "Deep Momentary Sag": "Deep momentary sag",
-          "Small Momentary Spike": "Small momentary spike",
-          "Large Momentary Spike": "Large momentary spike",
-          "Self Test": "Self test",
-          "Rate of Voltage Change": "Rate of voltage change"
+          "no_transfer": "No transfer",
+          "high_line_voltage": "High line voltage",
+          "brownout": "Brownout",
+          "blackout": "Blackout",
+          "small_momentary_sag": "Small momentary sag",
+          "deep_momentary_sag": "Deep momentary sag",
+          "small_momentary_spike": "Small momentary spike",
+          "large_momentary_spike": "Large momentary spike",
+          "self_test": "Self test",
+          "rate_of_voltage_change": "Rate of voltage change"
         }
       },
       "outlet_group_indexed": {
@@ -325,27 +322,16 @@
         }
       },
       "selected_source": {
-        "name": "Selected source",
-        "state": {}
+        "name": "Selected source"
       },
       "preferred_source": {
-        "name": "Preferred source",
-        "state": {
-          "none": "None"
-        }
-      },
-      "input_status_indexed": {
-        "name": "{label}",
-        "state": {
-          "fail": "Fail",
-          "ok": "Ok"
-        }
+        "name": "Preferred source"
       },
       "input_frequency_indexed": {
-        "name": "{label}"
+        "name": "{label} frequency"
       },
       "input_orientation_indexed": {
-        "name": "{label}",
+        "name": "{label} orientation",
         "state": {
           "unknown": "Unknown",
           "single_phase": "Single phase",
@@ -355,7 +341,7 @@
         }
       },
       "input_type_indexed": {
-        "name": "{label}",
+        "name": "{label} type",
         "state": {
           "unknown": "Unknown",
           "main": "Main",
@@ -363,34 +349,169 @@
         }
       },
       "input_max_voltage_indexed": {
-        "name": "{label}"
+        "name": "{label} max voltage"
       },
       "input_min_voltage_indexed": {
-        "name": "{label}"
+        "name": "{label} min voltage"
       },
       "input_current_indexed": {
-        "name": "{label}"
+        "name": "{label} current"
       },
       "input_power_indexed": {
-        "name": "{label}"
+        "name": "{label} power"
       },
       "input_voltage_indexed": {
-        "name": "{label}"
+        "name": "{label} voltage"
       },
       "output_frequency_indexed": {
-        "name": "{label}"
+        "name": "{label} frequency"
       },
       "output_voltage_indexed": {
-        "name": "{label}"
+        "name": "{label} voltage"
       },
       "output_current_indexed": {
-        "name": "{label}"
+        "name": "{label} current"
       },
       "output_power_indexed": {
-        "name": "{label}"
+        "name": "{label} power"
       },
       "output_load_indexed": {
-        "name": "{label}"
+        "name": "{label} load"
+      },
+      "bank_status_indexed": {
+        "name": "{label} status",
+        "state": {
+          "normal": "Normal",
+          "low_load": "Low load",
+          "near_overload": "Near overload",
+          "overload": "Overload"
+        }
+      },
+      "bank_current_indexed": {
+        "name": "{label} current"
+      },
+      "bank_voltage_indexed": {
+        "name": "{label} voltage"
+      },
+      "bank_power_indexed": {
+        "name": "{label} power"
+      },
+      "input_phase_frequency_indexed_phase": {
+        "name": "{label} frequency phase {index}"
+      },
+      "output_phase_frequency_indexed_phase": {
+        "name": "{label} frequency phase {index}"
+      },
+      "input_phase_voltage_indexed_phase": {
+        "name": "{label} voltage phase {index}"
+      },
+      "input_phase_max_voltage_indexed_phase": {
+        "name": "{label} max voltage phase {index}"
+      },
+      "input_phase_min_voltage_indexed_phase": {
+        "name": "{label} min voltage phase {index}"
+      },
+      "input_phase_current_indexed_phase": {
+        "name": "{label} current phase {index}"
+      },
+      "output_phase_voltage_indexed_phase": {
+        "name": "{label} voltage phase {index}"
+      },
+      "output_phase_current_indexed_phase": {
+        "name": "{label} current phase {index}"
+      },
+      "output_phase_power_indexed_phase": {
+        "name": "{label} power phase {index}"
+      },
+      "output_phase_max_power_indexed_phase": {
+        "name": "{label} max power phase {index}"
+      },
+      "output_phase_min_power_indexed_phase": {
+        "name": "{label} min power phase {index}"
+      },
+      "output_phase_real_power_indexed_phase": {
+        "name": "{label} real power phase {index}"
+      },
+      "output_phase_real_load_indexed_phase": {
+        "name": "{label} real load phase {index}"
+      },
+      "output_phase_load_indexed_phase": {
+        "name": "{label} load phase {index}"
+      },
+      "output_phase_max_load_indexed_phase": {
+        "name": "{label} max load phase {index}"
+      },
+      "output_phase_min_load_indexed_phase": {
+        "name": "{label} min load phase {index}"
+      },
+      "input_frequency_indexed_phase": {
+        "name": "{label} frequency phase {index}"
+      },
+      "input_orientation_indexed_phase": {
+        "name": "{label} orientation phase {index}",
+        "state": {
+          "unknown": "Unknown",
+          "single_phase": "Single phase",
+          "split_phase": "Split phase",
+          "three_phase_neutral": "Three phase neutral",
+          "three_phase": "Three phase"
+        }
+      },
+      "input_type_indexed_phase": {
+        "name": "{label} type phase {index}",
+        "state": {
+          "unknown": "Unknown",
+          "main": "Main",
+          "bypass": "Bypass"
+        }
+      },
+      "input_max_voltage_indexed_phase": {
+        "name": "{label} max voltage phase {index}"
+      },
+      "input_min_voltage_indexed_phase": {
+        "name": "{label} min voltage phase {index}"
+      },
+      "input_current_indexed_phase": {
+        "name": "{label} current phase {index}"
+      },
+      "input_power_indexed_phase": {
+        "name": "{label} power phase {index}"
+      },
+      "input_voltage_indexed_phase": {
+        "name": "{label} voltage phase {index}"
+      },
+      "output_frequency_indexed_phase": {
+        "name": "{label} frequency phase {index}"
+      },
+      "output_voltage_indexed_phase": {
+        "name": "{label} voltage phase {index}"
+      },
+      "output_current_indexed_phase": {
+        "name": "{label} current phase {index}"
+      },
+      "output_power_indexed_phase": {
+        "name": "{label} power phase {index}"
+      },
+      "output_load_indexed_phase": {
+        "name": "{label} load phase {index}"
+      },
+      "bank_status_indexed_bank": {
+        "name": "{label} status bank {index}",
+        "state": {
+          "normal": "Normal",
+          "low_load": "Low load",
+          "near_overload": "Near overload",
+          "overload": "Overload"
+        }
+      },
+      "bank_current_indexed_bank": {
+        "name": "{label} current bank {index}"
+      },
+      "bank_voltage_indexed_bank": {
+        "name": "{label} voltage bank {index}"
+      },
+      "bank_power_indexed_bank": {
+        "name": "{label} power bank {index}"
       }
     },
     "binary_sensor": {
@@ -437,10 +558,10 @@
         "name": "Switch fault"
       },
       "source_a_fault": {
-        "name": "Source a fault"
+        "name": "{input} fault"
       },
       "source_b_fault": {
-        "name": "Source b fault"
+        "name": "{input} fault"
       },
       "output_fault": {
         "name": "Output fault"
