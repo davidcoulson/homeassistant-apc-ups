@@ -401,9 +401,8 @@ async def test_pysnmp_construction_error():
     from custom_components.apc_ups_snmp.snmp_client import SnmpConfigError
 
     client = ApcSnmpClient("localhost")
-    with patch(
-        "custom_components.apc_ups_snmp.snmp_client.SnmpEngine",
-        side_effect=PySnmpError("bad key"),
+    with patch.object(
+        ApcSnmpClient, "_get_auth_data", side_effect=PySnmpError("bad key")
     ):
         try:
             with pytest.raises(SnmpConfigError) as error:
@@ -412,3 +411,13 @@ async def test_pysnmp_construction_error():
         finally:
             client.close()
             await asyncio.to_thread(client._executor.shutdown, wait=True)
+
+
+async def test_unresolvable_host_is_connection_error():
+    """A DNS failure is a connection problem, not bad security settings."""
+    client = ApcSnmpClient("does-not-resolve.invalid", version="v1", community="x")
+    try:
+        with pytest.raises(SnmpConnectionError):
+            await client.async_get_multiple([".1.3.6.1.2.1.1.1.0"])
+    finally:
+        client.close()

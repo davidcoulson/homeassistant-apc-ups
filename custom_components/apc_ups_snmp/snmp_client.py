@@ -275,7 +275,10 @@ class ApcSnmpClient:
                         (self.host, self.port), timeout=self.timeout, retries=1
                     )
                 if self._auth_data is None:
-                    self._auth_data = self._get_auth_data()
+                    try:
+                        self._auth_data = self._get_auth_data()
+                    except (PySnmpError, PyAsn1Error, ValueError, TypeError) as err:
+                        raise SnmpConfigError({"base": "invalid_security"}) from err
                 command = (
                     (next_cmd if self.version == "v1" else bulk_cmd)
                     if walk
@@ -311,8 +314,6 @@ class ApcSnmpClient:
                 raise
             except (SnmpError, SnmpConfigError):
                 raise
-            except (PySnmpError, PyAsn1Error, ValueError, TypeError) as err:
-                raise SnmpConfigError({"base": "invalid_security"}) from err
             except Exception as err:
                 self._target = None
                 raise SnmpConnectionError(str(err)) from err
