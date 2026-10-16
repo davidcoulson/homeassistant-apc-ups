@@ -12,6 +12,7 @@ from pysnmp.proto.rfc1905 import endOfMibView, noSuchInstance
 
 from custom_components.apc_ups_snmp.catalog import ATS, IDENTITY, UPS
 from custom_components.apc_ups_snmp.snmp_client import (
+    _MISSING,
     ApcSnmpClient,
     SnmpAuthError,
     SnmpTimeoutError,
@@ -117,7 +118,22 @@ async def test_real_poll(responder, version):
         assert result[IDENTITY[kind]["model"]] is not None
         root = UPS + ".12.1.2" if kind == "ups" else ATS + ".5.4.3"
         assert any(oid.startswith(root + ".") for oid in result)
-        assert await client.async_get(".1.3.6.1.4.1.318.999.0") is None
+        missing = ".1.3.6.1.4.1.318.999.0"
+        values, error = await client._request([missing])
+        if version == "v1":
+            assert values == {}
+            assert error == 1  # noSuchName identifies the rejected binding.
+        else:
+            assert values == {missing: _MISSING}  # noSuchInstance
+            assert error == 0
+        assert await client.async_get(missing) is None
+        assert missing in client._missing_scalars
+        if version != "v1":
+            # An endOfMibView response terminates the bulk walk.
+            assert await client._request([".1.3.6.1.4.1.999999"], walk=True) == (
+                {},
+                0,
+            )
         assert await client.async_walk(".1.3.6.1.4.1.999999") == {}
         # A bulk response contains several rows, not nested varbind lists.
         rows, error = await client._request([root], walk=True)

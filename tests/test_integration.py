@@ -496,6 +496,8 @@ async def test_v3_blank_password_preserved(hass, fake_snmp, source):
         )
         result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
         fields = {key.schema: key for key in result["data_schema"].schema}
+        for key in ("username", "auth_protocol", "priv_protocol"):
+            assert fields[key].description["suggested_value"] == data[key]
         for key in ("auth_password", "priv_password"):
             assert not fields[key].description
             assert fields[key].default is __import__("voluptuous").UNDEFINED
@@ -540,6 +542,16 @@ async def test_v3_blank_password_preserved(hass, fake_snmp, source):
             },
             "priv_password",
             "password_required",
+        ),
+        (
+            {
+                "auth_protocol": "SHA",
+                "auth_password": "password1",
+                "priv_protocol": "AES",
+                "priv_password": "short",
+            },
+            "priv_password",
+            "password_too_short",
         ),
     ],
 )
@@ -626,3 +638,134 @@ async def test_construction_error_is_security_error(hass, fake_snmp):
     flow._data = {"host": "localhost"}
     with patch.object(fake_snmp, "from_config", side_effect=ValueError("bad key")):
         assert await flow._test_connection() == "invalid_security"
+
+
+@pytest.mark.parametrize("kind", ["ups", "ats"])
+@pytest.mark.parametrize("title", ["", "Saved title"])
+async def test_device_info_none_fallbacks(hass, fake_snmp, kind, title):
+    from custom_components.apc_ups_snmp.catalog import IDENTITY
+    from custom_components.apc_ups_snmp.coordinator import ApcUpsCoordinator
+    from custom_components.apc_ups_snmp.entity import ApcUpsEntity
+
+    entry = MockConfigEntry(domain=DOMAIN, title=title, data={})
+    entry.add_to_hass(hass)
+    coordinator = ApcUpsCoordinator(hass, {"host": "localhost", "device_type": kind})
+    coordinator.data = {oid: None for oid in IDENTITY[kind].values()}
+    entity = ApcUpsEntity(coordinator, entry.entry_id)
+    assert entity.device_info["name"] == (title or f"APC {kind.upper()}")
+    assert entity.device_info["model"] == "Unknown"
+    # Device info is also safe when its config entry is no longer present.
+    with patch.object(hass.config_entries, "async_get_entry", return_value=None):
+        assert entity.device_info["name"] == f"APC {kind.upper()}"
+    coordinator.close()
+
+
+@pytest.mark.parametrize(
+    "kind,fixture", [("ups", "smartups.walk"), ("ats", "ap4452a.walk")]
+)
+async def test_late_rows_and_none_values(hass, fake_snmp, kind, fixture):
+    data = read_walk(fixture)
+    if kind == "ups":
+        scalar = UPS + ".2.3.1.0"
+        binary = UPS + ".2.2.4.0"
+        row = UPS + ".12.1.2.1.3.9"
+        keys = ("battery_capacity", "replace_battery", "outlet_group_9")
+    else:
+        scalar = ATS + ".1.7.0"
+        binary = ATS + ".5.1.3.0"
+        row = ATS + ".5.4.3.1.4.9.1.1"
+        keys = ("input_nominal_voltage", "redundancy_lost", "output_current_9_1_1")
+    # Start with a known scalar and binary sensor explicitly unavailable.
+    for oid in list(data):
+        if (
+            oid == scalar
+            or (kind == "ups" and oid == UPS + ".2.2.1.0")
+            or oid == binary
+        ):
+            data[oid] = None
+    with patch.object(fake_snmp, "async_get_all_data", return_value=data):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            version=2,
+            data={"host": "localhost", "device_type": kind},
+        )
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    registry = er.async_get(hass)
+
+    def ids():
+        return {
+            item.unique_id
+            for item in er.async_entries_for_config_entry(registry, entry.entry_id)
+        }
+
+    expected = {f"{entry.entry_id}_{key}" for key in keys}
+    assert not expected.intersection(ids())
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator.async_set_updated_data({**data, scalar: 1000, binary: 2, row: 1})
+    await hass.async_block_till_done()
+    assert expected <= ids()
+    count = len(ids())
+    coordinator.async_set_updated_data(data)
+    await hass.async_block_till_done()
+    coordinator.async_set_updated_data({**data, scalar: 1000, binary: 2, row: 2})
+    await hass.async_block_till_done()
+    assert len(ids()) == count
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+def test_security_error_translations():
+    import json
+    from pathlib import Path
+
+    from custom_components.apc_ups_snmp.snmp_client import validate_v3
+
+    errors = {"invalid_security"}
+    for data in (
+        {"auth_password": "password1"},
+        {"auth_protocol": "SHA"},
+        {"auth_protocol": "SHA", "auth_password": "short"},
+        {"auth_protocol": "unknown", "auth_password": "password1"},
+        {"priv_protocol": "AES", "priv_password": "password1"},
+        {
+            "auth_protocol": "SHA",
+            "auth_password": "password1",
+            "priv_password": "short",
+        },
+    ):
+        errors.update(validate_v3(data).values())
+    for filename in ("strings.json", "translations/en.json"):
+        strings = json.loads(
+            (Path("custom_components/apc_ups_snmp") / filename).read_text()
+        )
+        assert errors <= strings["config"]["error"].keys()
+
+
+async def test_failed_v3_form_retains_nonsecret_input(hass, fake_snmp):
+    import voluptuous as vol
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"host": "::1", "port": 1161, "snmp_version": "v3"}
+    )
+    credentials = {
+        "username": "typed",
+        "auth_protocol": "SHA256",
+        "auth_password": "password1",
+        "priv_protocol": "AES256",
+        "priv_password": "password2",
+    }
+    with patch.object(fake_snmp, "async_test_connection", side_effect=SnmpAuthError):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], credentials
+        )
+    assert result["errors"] == {"base": "invalid_auth"}
+    fields = {key.schema: key for key in result["data_schema"].schema}
+    for key in ("username", "auth_protocol", "priv_protocol"):
+        assert fields[key].description["suggested_value"] == credentials[key]
+    for key in ("auth_password", "priv_password"):
+        assert fields[key].default is vol.UNDEFINED
+        assert not fields[key].description

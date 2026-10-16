@@ -449,3 +449,98 @@ async def test_v3_validation_keeps_field_errors():
         finally:
             client.close()
             await asyncio.to_thread(client._executor.shutdown, wait=True)
+
+
+@pytest.mark.parametrize("version", ["v1", "v2c", "v3"])
+async def test_removed_rows_and_hourly_retry(fake_snmp, version):
+    from .conftest import read_walk
+
+    client = fake_snmp("192.0.2.1", version=version)
+    data = read_walk("smartups.walk")
+    cell = UPS + ".12.1.2.1.3.1"
+    data[cell] = -1
+    with (
+        patch("tests.conftest.read_walk", return_value=data),
+        patch(
+            "custom_components.apc_ups_snmp.snmp_client.time.monotonic",
+            return_value=10000,
+        ) as now,
+    ):
+        assert (await client.async_get_all_data())[cell] is None
+        assert cell in client._table_oids
+        client.calls.clear()
+        data[cell] = 2
+        assert (await client.async_get_all_data())[cell] == 2
+        assert not any(walk for _, walk in client.calls)
+        del data[cell]
+        now.return_value = 10299
+        assert (await client.async_get_all_data())[cell] is None
+        assert cell in client._table_oids
+        assert not any(walk for _, walk in client.calls)
+        now.return_value = 10300
+        await client.async_get_all_data()
+        assert cell not in client._table_oids
+        assert cell not in client._missing_scalars
+        assert any(walk for _, walk in client.calls)
+        # A missing row discovery must not postpone hourly scalar retries.
+        missing = set(client._missing_scalars)
+        assert missing
+        recovered = next(iter(missing))
+        data[recovered] = 42
+        data[cell] = 1
+        client.calls.clear()
+        now.return_value = 13599
+        result = await client.async_get_all_data()
+        assert result[recovered] is None
+        assert not any(walk for _, walk in client.calls)
+        now.return_value = 13600
+        result = await client.async_get_all_data()
+        assert result[recovered] == 42
+        assert result[cell] == 1
+        assert recovered not in client._missing_scalars
+        assert cell in client._table_oids
+        assert any(walk for _, walk in client.calls)
+
+
+def test_from_config_all_connection_fields():
+    data = {
+        "host": "::1",
+        "port": 1161,
+        "snmp_version": "v3",
+        "community": "readonly",
+        "username": "monitor",
+        "auth_protocol": "SHA256",
+        "auth_password": "password1",
+        "priv_protocol": "AES",
+        "priv_password": "password2",
+        "device_type": "ats",
+        "sensors": ["old_selection"],
+    }
+    client = ApcSnmpClient.from_config(data)
+    assert client.version == "v3"
+    for key in data.keys() - {"snmp_version", "device_type", "sensors"}:
+        assert getattr(client, key) == data[key]
+
+
+@pytest.mark.parametrize(
+    "credentials,auth,priv",
+    [
+        ({}, "usmNoAuthProtocol", "usmNoPrivProtocol"),
+        (
+            {
+                "auth_protocol": "SHA",
+                "auth_password": "password1",
+                "priv_protocol": "AES",
+                "priv_password": "password2",
+            },
+            "usmHMACSHAAuthProtocol",
+            "usmAesCfb128Protocol",
+        ),
+    ],
+)
+def test_v3_protocols_are_explicit(credentials, auth, priv):
+    from pysnmp.hlapi.v3arch import asyncio as snmp
+
+    result = ApcSnmpClient("localhost", version="v3", **credentials)._get_auth_data()
+    assert result.authentication_protocol == getattr(snmp, auth)
+    assert result.privacy_protocol == getattr(snmp, priv)
