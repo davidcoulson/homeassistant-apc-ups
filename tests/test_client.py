@@ -428,3 +428,24 @@ async def test_unresolvable_host_is_connection_error():
         finally:
             client.close()
             await asyncio.to_thread(client._executor.shutdown, wait=True)
+
+
+async def test_v3_validation_keeps_field_errors():
+    import asyncio
+
+    from custom_components.apc_ups_snmp.snmp_client import SnmpConfigError
+
+    client = ApcSnmpClient(
+        "localhost", version="v3", username="monitor", auth_password="password1"
+    )
+    with patch(
+        "custom_components.apc_ups_snmp.snmp_client.UdpTransportTarget.create",
+        new=AsyncMock(),
+    ):
+        try:
+            with pytest.raises(SnmpConfigError) as error:
+                await client.async_get(".1.3.6.1.2.1.1.1.0")
+            assert error.value.errors == {"auth_protocol": "protocol_required"}
+        finally:
+            client.close()
+            await asyncio.to_thread(client._executor.shutdown, wait=True)

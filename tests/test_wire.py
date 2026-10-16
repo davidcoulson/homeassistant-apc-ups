@@ -160,3 +160,18 @@ async def test_real_closed_port():
         assert client._engine is not None
     finally:
         await close(client)
+
+
+async def test_real_v3_construction_error(hass):
+    """USM validates username size when building the request, after UsmUserData."""
+    from custom_components.apc_ups_snmp.config_flow import ApcUpsSnmpConfigFlow
+
+    flow = ApcUpsSnmpConfigFlow()
+    flow._data = {
+        "host": "127.0.0.1",
+        "snmp_version": "v3",
+        "username": "x" * 33,
+        "auth_protocol": "SHA",
+        "auth_password": "password1",
+    }
+    assert await flow._test_connection() == {"base": "invalid_security"}

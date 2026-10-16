@@ -277,6 +277,8 @@ class ApcSnmpClient:
                 if self._auth_data is None:
                     try:
                         self._auth_data = self._get_auth_data()
+                    except SnmpConfigError:
+                        raise
                     except (PySnmpError, PyAsn1Error, ValueError, TypeError) as err:
                         raise SnmpConfigError({"base": "invalid_security"}) from err
                 command = (
@@ -285,15 +287,20 @@ class ApcSnmpClient:
                     else get_cmd
                 )
                 bulk_args = (0, 20) if walk and self.version != "v1" else ()
-                indication, status, index, binds = await command(
-                    self._engine,
-                    self._auth_data,
-                    self._target,
-                    ContextData(),
-                    *bulk_args,
-                    *(ObjectType(ObjectIdentity(oid)) for oid in oids),
-                    lookupMib=False,
-                )
+                try:
+                    indication, status, index, binds = await command(
+                        self._engine,
+                        self._auth_data,
+                        self._target,
+                        ContextData(),
+                        *bulk_args,
+                        *(ObjectType(ObjectIdentity(oid)) for oid in oids),
+                        lookupMib=False,
+                    )
+                except PyAsn1Error as err:
+                    # USM field constraints are checked when building the PDU,
+                    # after UsmUserData construction has already succeeded.
+                    raise SnmpConfigError({"base": "invalid_security"}) from err
                 self._check_error(indication, status)
                 if status:
                     return {}, int(index or -1) if int(status) == 2 else -1
