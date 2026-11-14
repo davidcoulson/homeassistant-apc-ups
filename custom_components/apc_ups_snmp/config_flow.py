@@ -342,7 +342,7 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return ApcUpsSnmpOptionsFlow(config_entry)
 
 
-class ApcUpsSnmpOptionsFlow(config_entries.OptionsFlow):
+class ApcUpsSnmpOptionsFlow(config_entries.OptionsFlowWithReload):
     """Handle options flow for APC UPS SNMP."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
