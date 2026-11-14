@@ -772,3 +772,9 @@ async def test_failed_v3_form_retains_nonsecret_input(hass, fake_snmp):
     for key in ("auth_password", "priv_password"):
         assert fields[key].default is vol.UNDEFINED
         assert not fields[key].description
+
+
+def test_ats_bank_power_is_apparent():
+    data = {ATS + ".5.4.5.1.15.1": 1000}
+    item = next(i for i in measurements("ats", data) if i.key == "bank_power_1")
+    assert (item.unit, item.device_class) == ("VA", "apparent_power")

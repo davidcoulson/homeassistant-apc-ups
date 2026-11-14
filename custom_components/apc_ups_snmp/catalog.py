@@ -437,7 +437,7 @@ def measurements(device_type, data):
             {1: "normal", 2: "low_load", 3: "near_overload", 4: "overload"},
         ),
         (".5.4.5.1.6.", "bank_voltage", "V", "voltage", 1, None),
-        (".5.4.5.1.15.", "bank_power", "W", "power", 1, None),
+        (".5.4.5.1.15.", "bank_power", "VA", "apparent_power", 1, None),
     ]
     for prefix, key, unit, dc, scale, enum in tables:
         rows = [
