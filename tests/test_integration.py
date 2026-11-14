@@ -284,7 +284,7 @@ async def test_device_info_and_unavailability(hass, fake_snmp):
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, entry.entry_id)})
+    device = dr.async_get(hass).async_get_device_by_identifier((DOMAIN, entry.entry_id), entry.entry_id)
     assert device.serial_number == "AS0000000001"
     assert device.sw_version == "UPS 15.0"
     assert device.configuration_url == "http://192.0.2.1"
