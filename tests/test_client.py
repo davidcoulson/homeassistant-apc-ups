@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pysnmp.proto import errind
 from pysnmp.proto.rfc1902 import Gauge32, Integer32, OctetString, TimeTicks
 from pysnmp.proto.rfc1905 import EndOfMibView, NoSuchInstance, NoSuchObject
 
@@ -544,3 +545,12 @@ def test_v3_protocols_are_explicit(credentials, auth, priv):
     result = ApcSnmpClient("localhost", version="v3", **credentials)._get_auth_data()
     assert result.authentication_protocol == getattr(snmp, auth)
     assert result.privacy_protocol == getattr(snmp, priv)
+
+
+@pytest.mark.parametrize(
+    "indication",
+    [errind.unknownUserName, errind.decryptionError, errind.unsupportedSecurityLevel],
+)
+def test_real_pysnmp_usm_errors_are_auth(indication):
+    with pytest.raises(SnmpAuthError):
+        ApcSnmpClient._check_error(indication, None)

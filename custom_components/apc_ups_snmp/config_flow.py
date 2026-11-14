@@ -251,6 +251,14 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._data.pop(key, None)
         else:
             self._data.pop(CONF_COMMUNITY, None)
+            # A cleared protocol is omitted from the form; drop it and its password.
+            for proto, secret in (
+                (CONF_AUTH_PROTOCOL, CONF_AUTH_PASSWORD),
+                (CONF_PRIV_PROTOCOL, CONF_PRIV_PASSWORD),
+            ):
+                if proto not in user_input:
+                    self._data.pop(proto, None)
+                    self._data.pop(secret, None)
         for key, value in user_input.items():
             if key in (CONF_AUTH_PASSWORD, CONF_PRIV_PASSWORD) and not value:
                 continue
@@ -342,7 +350,7 @@ class ApcUpsSnmpConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return ApcUpsSnmpOptionsFlow(config_entry)
 
 
-class ApcUpsSnmpOptionsFlow(config_entries.OptionsFlow):
+class ApcUpsSnmpOptionsFlow(config_entries.OptionsFlowWithReload):
     """Handle options flow for APC UPS SNMP."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:

@@ -78,6 +78,7 @@ async def test_setup(hass, fake_snmp, kind, fixture):
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    assert not entry.update_listeners  # flows schedule the reload themselves
     registry = er.async_get(hass)
     entries = er.async_entries_for_config_entry(registry, entry.entry_id)
     assert len(entries) > 20
@@ -283,7 +284,7 @@ async def test_device_info_and_unavailability(hass, fake_snmp):
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, entry.entry_id)})
+    device = dr.async_get(hass).async_get_device_by_identifier((DOMAIN, entry.entry_id), entry.entry_id)
     assert device.serial_number == "AS0000000001"
     assert device.sw_version == "UPS 15.0"
     assert device.configuration_url == "http://192.0.2.1"
@@ -371,6 +372,8 @@ def test_overload_bit_flag():
 
 def test_phase_scaling_and_units():
     data = {
+        UPS + ".9.3.3.1.4.1.1.1": 123,
+        UPS + ".9.3.3.1.6.1.1.1": 5,
         UPS + ".9.3.3.1.7.1.1.1": 450,
         UPS + ".9.3.3.1.13.1.1.1": 400,
         UPS + ".9.2.2.1.4.1": 599,
@@ -379,6 +382,7 @@ def test_phase_scaling_and_units():
     assert items["output_phase_power_1_1_1"].unit == "VA"
     assert items["output_phase_real_power_1_1_1"].unit == "W"
     assert items["input_frequency"].value(data) == 59.9
+    assert items["output_phase_current_1_1_1"].value(data) == 12.3
 
 
 def test_row_names_diagnostics_and_duplicates():
@@ -503,7 +507,13 @@ async def test_v3_blank_password_preserved(hass, fake_snmp, source):
             assert fields[key].default is __import__("voluptuous").UNDEFINED
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
-            {"username": "monitor", "auth_password": "", "priv_password": ""},
+            {
+                "username": "monitor",
+                "auth_protocol": "SHA",
+                "auth_password": "",
+                "priv_protocol": "AES",
+                "priv_password": "",
+            },
         )
         assert result["reason"] == source + "_successful"
     assert entry.data["auth_password"] == "secret123"
@@ -769,3 +779,47 @@ async def test_failed_v3_form_retains_nonsecret_input(hass, fake_snmp):
     for key in ("auth_password", "priv_password"):
         assert fields[key].default is vol.UNDEFINED
         assert not fields[key].description
+
+
+def test_ats_bank_power_is_apparent():
+    data = {ATS + ".5.4.5.1.15.1": 1000}
+    item = next(i for i in measurements("ats", data) if i.key == "bank_power_1")
+    assert (item.unit, item.device_class) == ("VA", "apparent_power")
+
+
+def test_non_numeric_value_is_none():
+    data = {UPS + ".1.2.9.0": "1500 VA"}
+    item = next(i for i in measurements("ups", data) if i.key == "nominal_apparent_power")
+    assert item.value(data) is None
+
+
+async def test_v3_cleared_privacy_is_removed(hass, fake_snmp):
+    data = {
+        "host": "192.0.2.1",
+        "port": 161,
+        "snmp_version": "v3",
+        "username": "monitor",
+        "auth_protocol": "SHA",
+        "auth_password": "secret123",
+        "priv_protocol": "AES",
+        "priv_password": "private123",
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN, version=2, unique_id="AS0000000001", data=data
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_reload", return_value=True
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": "reconfigure", "entry_id": entry.entry_id}
+        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {"username": "monitor", "auth_protocol": "SHA", "auth_password": ""},
+        )
+        assert result["reason"] == "reconfigure_successful"
+    assert "priv_protocol" not in entry.data
+    assert "priv_password" not in entry.data
+    assert entry.data["auth_password"] == "secret123"

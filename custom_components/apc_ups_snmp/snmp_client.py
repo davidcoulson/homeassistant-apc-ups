@@ -11,6 +11,7 @@ from typing import Any
 
 from pyasn1.error import PyAsn1Error
 from pysnmp.error import PySnmpError
+from pysnmp.proto import errind
 from pysnmp.hlapi.v3arch.asyncio import (
     CommunityData,
     ContextData,
@@ -90,6 +91,17 @@ def validate_v3(data):
     ):
         errors["priv_protocol"] = "privacy_requires_auth"
     return errors
+
+
+# pysnmp's real USM failure texts ("Unknown USM user", ...) match no keyword.
+_AUTH_INDICATIONS = (
+    errind.UnknownUserName,
+    errind.UnknownSecurityName,
+    errind.UnsupportedSecurityLevel,
+    errind.WrongDigest,
+    errind.DecryptionError,
+    errind.AuthenticationFailure,
+)
 
 
 class SnmpError(Exception):
@@ -248,7 +260,7 @@ class ApcSnmpClient:
         """Classify transport and authorization failures."""
         message = " ".join(str(value) for value in (indication, status) if value)
         lowered = message.lower()
-        if any(
+        if isinstance(indication, _AUTH_INDICATIONS) or any(
             word in lowered
             for word in ("auth", "unknownusername", "digest", "decryption")
         ):
