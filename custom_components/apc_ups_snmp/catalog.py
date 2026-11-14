@@ -228,7 +228,7 @@ UPS_PHASE_COLUMNS = [
     ("input_phase_min_voltage", ".9.2.3.1.5.", "V", "voltage", 1),
     ("input_phase_current", ".9.2.3.1.6.", "A", "current", 0.1),
     ("output_phase_voltage", ".9.3.3.1.3.", "V", "voltage", 1),
-    ("output_phase_current", ".9.3.3.1.6.", "A", "current", 0.1),
+    ("output_phase_current", ".9.3.3.1.4.", "A", "current", 0.1),
     ("output_phase_power", ".9.3.3.1.7.", "VA", "apparent_power", 1),
     ("output_phase_max_power", ".9.3.3.1.8.", "VA", "apparent_power", 1),
     ("output_phase_min_power", ".9.3.3.1.9.", "VA", "apparent_power", 1),

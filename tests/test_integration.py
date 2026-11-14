@@ -371,6 +371,8 @@ def test_overload_bit_flag():
 
 def test_phase_scaling_and_units():
     data = {
+        UPS + ".9.3.3.1.4.1.1.1": 123,
+        UPS + ".9.3.3.1.6.1.1.1": 5,
         UPS + ".9.3.3.1.7.1.1.1": 450,
         UPS + ".9.3.3.1.13.1.1.1": 400,
         UPS + ".9.2.2.1.4.1": 599,
@@ -379,6 +381,7 @@ def test_phase_scaling_and_units():
     assert items["output_phase_power_1_1_1"].unit == "VA"
     assert items["output_phase_real_power_1_1_1"].unit == "W"
     assert items["input_frequency"].value(data) == 59.9
+    assert items["output_phase_current_1_1_1"].value(data) == 12.3
 
 
 def test_row_names_diagnostics_and_duplicates():
