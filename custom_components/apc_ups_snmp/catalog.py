@@ -53,7 +53,10 @@ class Measurement:
                 return self.enum.get(raw)
             if scale is None:
                 return str(raw)
-            return round(float(raw) * scale, 4)
+            try:
+                return round(float(raw) * scale, 4)
+            except (TypeError, ValueError):
+                continue  # non-numeric text: try the next source
         return None
 
 

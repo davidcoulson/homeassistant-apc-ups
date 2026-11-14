@@ -778,3 +778,9 @@ def test_ats_bank_power_is_apparent():
     data = {ATS + ".5.4.5.1.15.1": 1000}
     item = next(i for i in measurements("ats", data) if i.key == "bank_power_1")
     assert (item.unit, item.device_class) == ("VA", "apparent_power")
+
+
+def test_non_numeric_value_is_none():
+    data = {UPS + ".1.2.9.0": "1500 VA"}
+    item = next(i for i in measurements("ups", data) if i.key == "nominal_apparent_power")
+    assert item.value(data) is None
